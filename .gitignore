@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Secrets & config locale
+.env
+
+# Donnees (le lac de donnees ne va jamais dans git EN LOCAL)
+# On ignore le CONTENU des repertoires, pas les repertoires eux-memes :
+# `data/raw/` ignorerait le dossier entier et git ne descendrait meme pas
+# dedans, rendant la negation `!.gitkeep` inoperante.
+#
+# Exception assumee : le workflow .github/workflows/collect.yml force
+# l'ajout des Parquet (`git add -f data/raw/...`) pour publier le lac sur le
+# deploiement public. L'ignore reste en place pour garder le depot propre
+# en developpement local ; seul le collecteur cloud passe outre, et c'est
+# precisement son role.
+data/raw/*
+data/warehouse/*
+data/.credit_ledger.json
+!data/raw/.gitkeep
+!data/warehouse/.gitkeep
+
+# dbt
+dbt/skytrace/target/
+dbt/skytrace/dbt_packages/
+dbt/skytrace/logs/
+# Identifiant anonyme genere par dbt a la premiere execution, propre a la
+# machine : il n'a rien a faire dans le depot.
+dbt/skytrace/.user.yml
+
+# Dagster
+# L'etat d'execution (SQLite, journaux, artefacts) est local a la machine,
+# mais la configuration de l'instance est versionnee.
+.dagster_home/*
+!.dagster_home/dagster.yaml
+orchestration/tmp*/
+.tmp_dagster_home*/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -1,0 +1,48 @@
+version: 2
+
+sources:
+  - name: raw
+    description: >
+      Couche bronze : fichiers Parquet ecrits par la couche d'ingestion
+      Python, lus directement par DuckDB sans etape de chargement. La
+      donnee y est conservee telle que renvoyee par la source.
+    schema: main
+
+    tables:
+      - name: opensky_states
+        description: >
+          Positions instantanees des aeronefs. Un fichier par appel API,
+          partitionne par date et heure d'ingestion.
+        # `loaded_at_field` alimente `dbt source freshness` : le pipeline
+        # sait detecter tout seul que l'ingestion s'est arretee.
+        loaded_at_field: ingested_at
+        freshness:
+          warn_after: { count: 2, period: hour }
+          error_after: { count: 12, period: hour }
+        meta:
+          external_location: >-
+            read_parquet(
+              '{{ env_var("SKYTRACE_DATA_DIR") }}/raw/opensky_states/**/*.parquet',
+              hive_partitioning = true,
+              union_by_name = true
+            )
+        columns:
+          - name: icao24
+            description: Adresse OACI 24 bits du transpondeur - identifiant unique de l'appareil.
+          - name: snapshot_ts
+            description: Horodatage Unix du snapshot, commun a toutes les lignes du fichier.
+          - name: ingested_at
+            description: Horodatage d'ecriture cote pipeline (tracabilite).
+
+      - name: ourairports_airports
+        description: >
+          Referentiel mondial des aerodromes (OurAirports), dimension a
+          evolution lente rafraichie une fois par jour.
+        meta:
+          external_location: >-
+            read_parquet('{{ env_var("SKYTRACE_DATA_DIR") }}/raw/ourairports/airports.parquet')
+        columns:
+          - name: ident
+            description: Code identifiant de l'aerodrome (souvent OACI).
+          - name: type
+            description: Categorie (large_airport, medium_airport, heliport...).

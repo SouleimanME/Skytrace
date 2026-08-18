@@ -1,0 +1,62 @@
+# Deux services sur la meme image et le meme lac de donnees.
+#
+#   docker compose up --build
+#
+#   Orchestrateur   http://localhost:3000
+#   Tableau de bord http://localhost:8501
+#
+# Le fichier `.env` est optionnel : sans identifiants OpenSky, le pipeline
+# tourne en mode anonyme.
+
+services:
+  orchestrator:
+    build: .
+    image: skytrace:latest
+    container_name: skytrace-orchestrator
+    ports:
+      - "3000:3000"
+    volumes:
+      # Le lac et l'entrepot vivent hors du conteneur : detruire l'image ne
+      # detruit pas l'historique de collecte.
+      - skytrace-data:/app/data
+      - skytrace-dagster:/app/.dagster_home
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      SKYTRACE_REGION: ${SKYTRACE_REGION:-france}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:3000')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+
+  dashboard:
+    build: .
+    image: skytrace:latest
+    container_name: skytrace-dashboard
+    depends_on:
+      - orchestrator
+    ports:
+      - "8501:8501"
+    volumes:
+      # Lecture seule : DuckDB n'accepte qu'un ecrivain, et c'est
+      # l'orchestrateur. Le montage le rend explicite plutot qu'implicite.
+      - skytrace-data:/app/data:ro
+    env_file:
+      - path: .env
+        required: false
+    command:
+      - streamlit
+      - run
+      - dashboard/app.py
+      - --server.port=8501
+      - --server.address=0.0.0.0
+      - --server.headless=true
+    restart: unless-stopped
+
+volumes:
+  skytrace-data:
+  skytrace-dagster:

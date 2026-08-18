@@ -1,0 +1,13 @@
+# Dependances installees par Streamlit Community Cloud au deploiement.
+#
+# `.[transform,dashboard]` installe le paquet local et donc :
+#   - ses dependances de base (duckdb, pyarrow, pandas, httpx...) ;
+#   - l'extra `transform` (dbt-core + dbt-duckdb), car le tableau de bord
+#     reconstruit les marts a partir du lac Parquet au demarrage ;
+#   - l'extra `dashboard` (streamlit, plotly, pydeck).
+#
+# Le paquet `skytrace` reste malgre tout importe depuis `src/` grace au
+# `sys.path.insert` en tete de dashboard/app.py : c'est ce qui garantit que
+# PROJECT_ROOT pointe vers la racine du depot (ou vivent dbt/ et data/),
+# et non vers site-packages.
+.[transform,dashboard]

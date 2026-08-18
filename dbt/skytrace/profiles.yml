@@ -1,0 +1,34 @@
+# Profil dbt versionne : il ne contient aucun secret, uniquement des
+# chemins resolus a l'execution depuis l'environnement.
+#
+# `SKYTRACE_DUCKDB_PATH` est injecte par la CLI (`skytrace dbt ...`) et par
+# la ressource Dagster. Pour lancer dbt a la main, exporter la variable ou
+# passer par la CLI du projet.
+
+skytrace:
+  target: dev
+
+  outputs:
+    dev:
+      type: duckdb
+      path: "{{ env_var('SKYTRACE_DUCKDB_PATH') }}"
+      schema: main
+      threads: 4
+      settings:
+        # Sans ce reglage, DuckDB prend le fuseau de la machine. Or
+        # `date_trunc('hour', ...)` sur un TIMESTAMPTZ decoupe les buckets
+        # dans le fuseau de session : deux developpeurs dans deux fuseaux
+        # obtiendraient des agregats horaires etiquetes differemment, et un
+        # fuseau a offset non entier (Inde, +5:30) decalerait carrement les
+        # bornes. Tout le pipeline raisonne en UTC - partitions du lac,
+        # plannings Dagster - la lecture doit suivre.
+        TimeZone: "UTC"
+
+    # Cible utilisee par la CI : base ephemere en memoire, aucun etat partage.
+    ci:
+      type: duckdb
+      path: "{{ env_var('SKYTRACE_DUCKDB_PATH', ':memory:') }}"
+      schema: main
+      threads: 4
+      settings:
+        TimeZone: "UTC"

@@ -1,0 +1,42 @@
+name: "skytrace"
+version: "0.1.0"
+config-version: 2
+
+profile: "skytrace"
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+snapshot-paths: ["snapshots"]
+
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+# Variables reglables sans toucher au SQL.
+vars:
+  # Rayon (km) sous lequel un aeronef est considere comme "en activite"
+  # sur un aeroport donne.
+  airport_activity_radius_km: 8
+  # Altitude (m) sous laquelle un aeronef est en phase d'approche/decollage.
+  approach_altitude_m: 1200
+
+models:
+  skytrace:
+    +persist_docs:
+      relation: true
+      columns: true
+
+    staging:
+      +schema: staging
+      +materialized: view
+
+    intermediate:
+      +schema: intermediate
+      +materialized: view
+
+    marts:
+      +schema: marts
+      +materialized: table

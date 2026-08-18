@@ -1,0 +1,87 @@
+version: 2
+
+models:
+  - name: stg_opensky__states
+    description: >
+      Positions d'aeronefs nettoyees et typees, correspondance 1 pour 1
+      avec la couche bronze moins les lignes sans position exploitable.
+    columns:
+      - name: aircraft_icao24
+        description: Adresse OACI 24 bits, en minuscules. Identifiant de l'appareil.
+        data_tests:
+          - not_null
+      - name: snapshot_at
+        description: Instant du releve, commun a toutes les lignes d'un meme fichier source.
+        data_tests:
+          - not_null
+      - name: latitude
+        data_tests:
+          - not_null
+          - accepted_range:
+              arguments:
+                min_value: -90
+                max_value: 90
+      - name: longitude
+        data_tests:
+          - not_null
+          - accepted_range:
+              arguments:
+                min_value: -180
+                max_value: 180
+      - name: barometric_altitude_m
+        description: >
+          Altitude barometrique. Peut etre legerement negative (aeroports
+          sous le niveau de la mer, calage altimetrique) - l'intervalle
+          tolere -500 m et plafonne au-dessus du plafond operationnel de
+          l'aviation civile.
+        data_tests:
+          - accepted_range:
+              arguments:
+                min_value: -500
+                max_value: 20000
+      - name: ground_speed_ms
+        data_tests:
+          - accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 400
+      - name: heading_deg
+        data_tests:
+          - accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 360
+      - name: is_on_ground
+        data_tests:
+          - not_null
+
+  - name: stg_ourairports__airports
+    description: >
+      Referentiel aeroports restreint aux pistes grandes et moyennes.
+    columns:
+      - name: airport_id
+        data_tests:
+          - not_null
+          - unique
+      - name: airport_ident
+        data_tests:
+          - not_null
+      - name: airport_type
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["large_airport", "medium_airport"]
+      - name: latitude
+        data_tests:
+          - not_null
+          - accepted_range:
+              arguments:
+                min_value: -90
+                max_value: 90
+      - name: longitude
+        data_tests:
+          - not_null
+          - accepted_range:
+              arguments:
+                min_value: -180
+                max_value: 180

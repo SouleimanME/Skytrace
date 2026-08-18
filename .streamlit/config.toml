@@ -1,0 +1,22 @@
+# Configuration Streamlit du projet, lue depuis le repertoire de travail.
+#
+# `headless = true` a un effet peu evident mais decisif ici : sans lui,
+# Streamlit affiche au premier lancement une invite interactive demandant
+# une adresse e-mail. Elle bloque le demarrage tant que personne ne tape
+# sur Entree - donc elle casse tout lancement non interactif (conteneur,
+# CI, service systeme), et elle donne une mauvaise premiere impression a
+# quelqu'un qui vient de cloner le depot.
+#
+# Contrepartie : le navigateur ne s'ouvre plus automatiquement. La commande
+# `skytrace dashboard` affiche l'URL a la place.
+
+[server]
+headless = true
+port = 8501
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+base = "dark"
+primaryColor = "#2563eb"

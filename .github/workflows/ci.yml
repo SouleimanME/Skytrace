@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Aucun secret n'est necessaire : la CI ne joint jamais l'API OpenSky.
+  # Elle travaille sur un lac synthetique deterministe.
+  SKYTRACE_DATA_DIR: ${{ github.workspace }}/data
+  SKYTRACE_DUCKDB_PATH: ${{ github.workspace }}/data/warehouse/skytrace.duckdb
+  SKYTRACE_REGION: france
+
+jobs:
+  quality:
+    name: Lint et tests unitaires
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Installation
+        run: pip install -e ".[transform,dev]"
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Format (ruff)
+        run: ruff format --check .
+
+      - name: Tests unitaires
+        run: pytest --cov=skytrace --cov-report=term-missing
+
+  pipeline:
+    name: Chaine de transformation et qualite des donnees
+    runs-on: ubuntu-latest
+    # La logique metier vit dans le SQL : une CI qui ne testerait que le
+    # Python passerait a cote de l'essentiel. On execute donc la chaine dbt
+    # complete et ses controles sur un jeu de donnees synthetique.
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Installation
+        run: pip install -e ".[transform]"
+
+      - name: Generation du lac de donnees synthetique
+        run: python scripts/generate_demo_data.py --hours 6 --per-hour 4 --aircraft 200
+
+      - name: Verification de la coherence du projet dbt
+        run: skytrace dbt parse
+
+      - name: Construction et tests des modeles
+        run: skytrace dbt build
+
+      - name: Idempotence - une seconde execution ne doit rien casser
+        # Verifie la strategie incrementale `delete+insert` : rejouer
+        # l'ensemble ne doit ni dupliquer de lignes ni faire echouer le
+        # test de grain unique.
+        run: skytrace dbt build
+
+      - name: Reconstruction complete
+        run: skytrace dbt build --full-refresh
+
+      - name: Inventaire de l'entrepot
+        run: skytrace info
+
+      - name: Publication de la documentation dbt
+        run: skytrace dbt docs generate
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dbt-target
+          path: dbt/skytrace/target/
+          retention-days: 7
+
+  orchestration:
+    name: Validation des definitions Dagster
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Installation
+        run: pip install -e ".[transform,orchestration]"
+
+      - name: Generation du lac de donnees synthetique
+        run: python scripts/generate_demo_data.py --hours 2 --per-hour 2 --aircraft 50
+
+      - name: Validation du graphe d'assets
+        run: dagster definitions validate -m orchestration.definitions

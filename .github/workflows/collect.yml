@@ -1,0 +1,74 @@
+name: Collecte planifiee
+
+# Ce workflow EST l'ordonnanceur de la version publique du projet.
+#
+# En local, c'est Dagster qui declenche la collecte toutes les 15 min. Dans
+# le cloud, GitHub Actions joue ce role gratuitement : le cron ci-dessous
+# reveille un runner, collecte un snapshot du trafic, le transforme, puis
+# committe les nouveaux fichiers Parquet dans le depot. Le tableau de bord
+# Streamlit lit ensuite cet historique qui grossit a chaque execution.
+#
+# Cout : nul. Les minutes GitHub Actions sont illimitees sur un depot public.
+# Quota OpenSky : mode anonyme (aucun secret), zone France = 3 credits par
+# appel. A 48 executions/jour, cela fait 144 des 400 credits autorises.
+
+on:
+  schedule:
+    # Toutes les 30 minutes. Note : le cron GitHub Actions n'est pas garanti
+    # a la minute pres et peut etre retarde ou saute en periode de charge.
+    # Le bandeau de fraicheur du tableau de bord rend ces trous visibles.
+    - cron: "*/30 * * * *"
+  workflow_dispatch: {} # permet un declenchement manuel depuis l'onglet Actions
+
+# Empeche deux collectes de se marcher dessus sur le push (git non-fast-forward).
+concurrency:
+  group: collecte
+  cancel-in-progress: false
+
+permissions:
+  contents: write # necessaire pour committer les donnees dans le depot
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    env:
+      # Tout le pipeline raisonne en UTC ; les chemins pointent vers le depot.
+      SKYTRACE_REGION: france
+      SKYTRACE_DATA_DIR: ${{ github.workspace }}/data
+      SKYTRACE_DUCKDB_PATH: ${{ github.workspace }}/data/warehouse/skytrace.duckdb
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Installation
+        run: pip install -e ".[transform]"
+
+      - name: Collecte et transformation
+        # `pipeline` = ingestion d'un snapshot + referentiel aeroports (si
+        # absent) + dbt build. dbt build sert de garde-fou qualite : si les
+        # 54 tests echouent sur la donnee fraiche, l'etape echoue et le
+        # workflow passe au rouge - un signal honnete et visible.
+        run: skytrace pipeline
+
+      - name: Publication des donnees
+        # `if: always()` : meme si dbt a signale une anomalie, le Parquet brut
+        # a deja ete ecrit et merite d'etre conserve (couche bronze immuable).
+        # `git add -f` : le .gitignore exclut data/raw pour l'hygiene du dev
+        # local ; ici on force l'ajout, car c'est precisement le role de ce
+        # workflow que de publier ces fichiers.
+        if: always()
+        run: |
+          git config user.name  "skytrace-bot"
+          git config user.email "actions@github.com"
+          git add -f data/raw/opensky_states data/raw/ourairports 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "Aucune donnee nouvelle a publier."
+          else
+            git commit -m "data: snapshot du $(date -u '+%Y-%m-%d %H:%M UTC')"
+            git push
+          fi

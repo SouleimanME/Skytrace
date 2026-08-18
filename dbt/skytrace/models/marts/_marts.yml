@@ -1,0 +1,166 @@
+version: 2
+
+models:
+  # ---------------------------------------------------------------------
+  # Faits
+  # ---------------------------------------------------------------------
+  - name: fct_aircraft_positions
+    description: >
+      Table de faits centrale. Grain : un aeronef observe a un instant
+      donne. Materialisation incrementale, idempotente par rejeu.
+    columns:
+      - name: aircraft_icao24
+        description: Cle etrangere vers dim_aircraft.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_aircraft')
+                field: aircraft_icao24
+      - name: snapshot_at
+        data_tests:
+          - not_null
+      - name: flight_phase
+        description: Phase de vol deduite du taux de montee.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ["sol", "montee", "descente", "croisiere", "inconnu"]
+      - name: barometric_altitude_ft
+        data_tests:
+          - accepted_range:
+              arguments:
+                min_value: -1650
+                max_value: 66000
+      - name: ground_speed_kt
+        data_tests:
+          - accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 780
+      - name: position_age_seconds
+        description: >
+          Age de la derniere position connue au moment du releve. Une
+          valeur negative signalerait une incoherence d'horloge cote source.
+        data_tests:
+          - accepted_range:
+              arguments:
+                min_value: 0
+
+  - name: fct_traffic_hourly
+    description: >
+      Trafic agrege par heure et par pays d'immatriculation. Sert de socle
+      aux series temporelles du tableau de bord.
+    columns:
+      - name: traffic_hour
+        data_tests:
+          - not_null
+      - name: origin_country
+        data_tests:
+          - not_null
+      - name: distinct_aircraft
+        description: >
+          Mesure NON additive dans le temps : ne pas sommer plusieurs
+          heures pour obtenir un total journalier.
+        data_tests:
+          - not_null
+          - accepted_range:
+              arguments:
+                min_value: 1
+      - name: position_count
+        description: Mesure additive, utilisable pour toute agregation.
+        data_tests:
+          - not_null
+          - accepted_range:
+              arguments:
+                min_value: 1
+
+  - name: fct_airport_activity
+    description: >
+      Activite observee autour de chaque aeroport, par heure. Les phases
+      (montee / descente) sont des inferences, pas des mouvements declares.
+    columns:
+      - name: airport_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_airport')
+                field: airport_id
+      - name: activity_hour
+        data_tests:
+          - not_null
+      - name: distinct_aircraft
+        data_tests:
+          - not_null
+          - accepted_range:
+              arguments:
+                min_value: 1
+      - name: avg_distance_km
+        description: Distance moyenne au point de reference de l'aeroport.
+        data_tests:
+          - accepted_range:
+              arguments:
+                min_value: 0
+                # doit rester sous var('airport_activity_radius_km')
+                max_value: 8
+
+  # ---------------------------------------------------------------------
+  # Dimensions
+  # ---------------------------------------------------------------------
+  - name: dim_aircraft
+    description: >
+      Dimension aeronef, construite par agregation des observations.
+    columns:
+      - name: aircraft_icao24
+        data_tests:
+          - not_null
+          - unique
+      - name: observation_count
+        data_tests:
+          - not_null
+          - accepted_range:
+              arguments:
+                min_value: 1
+      - name: on_ground_ratio
+        data_tests:
+          - accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+      - name: first_seen_at
+        data_tests:
+          - not_null
+      - name: last_seen_at
+        data_tests:
+          - not_null
+
+  - name: dim_airport
+    description: >
+      Dimension conforme des aerodromes, partagee par tous les faits
+      geographiques.
+    columns:
+      - name: airport_id
+        data_tests:
+          - not_null
+          - unique
+      - name: airport_label
+        data_tests:
+          - not_null
+      - name: grid_cell
+        description: Cellule de grille de 1 degre, cle de pre-filtrage spatial.
+        data_tests:
+          - not_null
+      - name: latitude
+        data_tests:
+          - accepted_range:
+              arguments:
+                min_value: -90
+                max_value: 90
+      - name: longitude
+        data_tests:
+          - accepted_range:
+              arguments:
+                min_value: -180
+                max_value: 180

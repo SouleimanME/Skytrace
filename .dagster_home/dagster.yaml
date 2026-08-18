@@ -1,0 +1,31 @@
+# Configuration de l'instance Dagster.
+#
+# Ce fichier est versionne, contrairement au reste de `.dagster_home/` qui
+# contient l'etat d'execution (base SQLite, journaux, artefacts de run).
+#
+# Sans `DAGSTER_HOME` pointant vers un repertoire persistant, Dagster cree
+# un dossier temporaire supprime a l'arret : l'historique des
+# materialisations, l'etat des plannings (actif / inactif) et les journaux
+# de run disparaissent a chaque redemarrage. La commande `skytrace dagster`
+# positionne la variable automatiquement.
+#
+# Le nom du fichier doit etre `dagster.yaml` : Dagster ignore silencieusement
+# un `dagster.yml` et repart sur la configuration par defaut.
+
+telemetry:
+  enabled: false
+
+# Purge automatique des traces d'evaluation : sur un pipeline qui tourne
+# toutes les 15 minutes, elles s'accumulent vite pour un interet nul
+# passe quelques semaines.
+retention:
+  schedule:
+    purge_after_days: 30
+  sensor:
+    purge_after_days: 7
+
+concurrency:
+  runs:
+    # Deux executions simultanees au maximum. DuckDB n'accepte qu'un seul
+    # ecrivain : au-dela, les runs se disputeraient le verrou de l'entrepot.
+    max_concurrent_runs: 2

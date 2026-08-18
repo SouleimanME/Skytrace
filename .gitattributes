@@ -1,0 +1,10 @@
+# Normalisation des fins de ligne : LF dans le depot pour tous les fichiers
+# texte. Evite les diffs parasites entre Windows (dev) et Linux (CI, runners
+# GitHub Actions, Streamlit Cloud), et supprime les avertissements CRLF.
+* text=auto eol=lf
+
+# Fichiers binaires : jamais de conversion.
+*.parquet binary
+*.duckdb binary
+*.png binary
+*.jpg binary

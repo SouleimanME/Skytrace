@@ -170,6 +170,13 @@ def write_report(panel: pd.DataFrame, results: dict, per_ap: pd.DataFrame) -> No
     )
     lines.append("")
     lines.append(
+        "> Le chiffre est un **coefficient de correlation de Pearson (r)** : "
+        "sans unite, de -1 (tendances opposees) a +1 (tendances identiques), "
+        "0 signifiant aucun lien. Le NO2 sous-jacent est mesure en "
+        "microgrammes par metre cube (ug/m3)."
+    )
+    lines.append("")
+    lines.append(
         f"Vu aeroport par aeroport, la correlation est negative pour "
         f"**{neg} des {len(per_ap)}** aeroports ayant assez d'heures :"
     )

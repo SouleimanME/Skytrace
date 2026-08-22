@@ -99,8 +99,42 @@ class Settings(BaseSettings):
     data_dir: Path | None = Field(default=None, alias="SKYTRACE_DATA_DIR")
     duckdb_path: Path | None = Field(default=None, alias="SKYTRACE_DUCKDB_PATH")
 
+    # --- Stockage objet R2 (optionnel) -----------------------------------
+    # Renseignes -> le lac brut vit sur Cloudflare R2 (s3://) au lieu du
+    # disque local. L'entrepot DuckDB, lui, reste local (reconstruit depuis
+    # R2). Absents -> comportement local inchange.
+    r2_account_id: str | None = Field(default=None, alias="SKYTRACE_R2_ACCOUNT_ID")
+    r2_bucket: str | None = Field(default=None, alias="SKYTRACE_R2_BUCKET")
+    r2_access_key_id: str | None = Field(default=None, alias="SKYTRACE_R2_ACCESS_KEY_ID")
+    r2_secret_access_key: str | None = Field(default=None, alias="SKYTRACE_R2_SECRET_ACCESS_KEY")
+
     # --- Divers ----------------------------------------------------------
     log_level: str = Field(default="INFO", alias="SKYTRACE_LOG_LEVEL")
+
+    # -- Stockage objet ---------------------------------------------------
+    @property
+    def uses_r2(self) -> bool:
+        return bool(
+            self.r2_account_id
+            and self.r2_bucket
+            and self.r2_access_key_id
+            and self.r2_secret_access_key
+        )
+
+    @property
+    def r2_endpoint(self) -> str | None:
+        """Endpoint S3-compatible de R2 (sans schema)."""
+        return f"{self.r2_account_id}.r2.cloudflarestorage.com" if self.r2_account_id else None
+
+    @property
+    def lake_uri(self) -> str:
+        """Racine du lac brut, pour la lecture (dbt / DuckDB).
+
+        `s3://bucket/raw` en mode R2, chemin local en mode disque.
+        """
+        if self.uses_r2:
+            return f"s3://{self.r2_bucket}/raw"
+        return self.raw_dir.as_posix()
 
     @field_validator("region")
     @classmethod
@@ -148,6 +182,14 @@ class Settings(BaseSettings):
         return self.raw_dir / "open_meteo_air_quality"
 
     @property
+    def aircraft_db_dir(self) -> Path:
+        return self.raw_dir / "opensky_aircraft_db"
+
+    @property
+    def airlines_dir(self) -> Path:
+        return self.raw_dir / "openflights_airlines"
+
+    @property
     def dbt_project_dir(self) -> Path:
         return PROJECT_ROOT / "dbt" / "skytrace"
 
@@ -165,6 +207,8 @@ class Settings(BaseSettings):
             self.states_dir,
             self.airports_dir,
             self.air_quality_dir,
+            self.aircraft_db_dir,
+            self.airlines_dir,
             self.resolved_duckdb_path.parent,
         ):
             path.mkdir(parents=True, exist_ok=True)
@@ -178,10 +222,26 @@ class Settings(BaseSettings):
         # `as_posix()` est indispensable : DuckDB interprete les motifs glob
         # avec des slash avant, y compris sous Windows. Un chemin en
         # antislash casse silencieusement `read_parquet('.../**/*.parquet')`.
-        return {
+        env = {
             "SKYTRACE_DATA_DIR": self.resolved_data_dir.as_posix(),
             "SKYTRACE_DUCKDB_PATH": self.resolved_duckdb_path.as_posix(),
+            # Racine du lac (local ou s3://) : les sources dbt lisent ici.
+            "SKYTRACE_LAKE_URI": self.lake_uri,
         }
+        if self.uses_r2:
+            env.update(
+                {
+                    "SKYTRACE_R2_ENDPOINT": self.r2_endpoint or "",
+                    "SKYTRACE_R2_ACCESS_KEY_ID": self.r2_access_key_id or "",
+                    "SKYTRACE_R2_SECRET_ACCESS_KEY": self.r2_secret_access_key or "",
+                }
+            )
+        return env
+
+    @property
+    def dbt_target(self) -> str:
+        """Cible dbt : `r2` quand le lac est sur R2, `dev` en local."""
+        return "r2" if self.uses_r2 else "dev"
 
 
 @lru_cache(maxsize=1)

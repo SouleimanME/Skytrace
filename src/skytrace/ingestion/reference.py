@@ -19,11 +19,11 @@ from pathlib import Path
 
 import httpx
 import pyarrow as pa
-import pyarrow.parquet as pq
 from pyarrow import csv as pa_csv
 
 from skytrace.config import Settings, get_settings
 from skytrace.logging_conf import get_logger
+from skytrace.storage import write_parquet
 
 logger = get_logger(__name__)
 
@@ -32,11 +32,15 @@ AIRPORTS_URL = "https://davidmegginson.github.io/ourairports-data/airports.csv"
 
 @dataclass(frozen=True)
 class IngestedReference:
-    path: Path
+    uri: str
     rows: int
     columns: list[str]
     checksum: str
     downloaded_at: datetime
+
+    @property
+    def path(self) -> Path:
+        return Path(self.uri)
 
 
 def _string_convert_options(header_line: str) -> pa_csv.ConvertOptions:
@@ -84,11 +88,10 @@ def ingest_airports(
     )
 
     downloaded_at = datetime.now(UTC)
-    destination = settings.airports_dir / "airports.parquet"
-    metadata_path = settings.airports_dir / "_ingestion_metadata.json"
+    result = write_parquet("ourairports/airports.parquet", table, settings)
 
-    pq.write_table(table, destination, compression="zstd")
-    metadata_path.write_text(
+    # Metadonnee d'ingestion : ecrite en local (informative, non lue par dbt).
+    (settings.airports_dir / "_ingestion_metadata.json").write_text(
         json.dumps(
             {
                 "source_url": url,
@@ -106,10 +109,10 @@ def ingest_airports(
         "Referentiel ecrit : %d aeroports, %d colonnes -> %s",
         table.num_rows,
         table.num_columns,
-        destination,
+        result.uri,
     )
     return IngestedReference(
-        path=destination,
+        uri=result.uri,
         rows=table.num_rows,
         columns=list(table.column_names),
         checksum=checksum,

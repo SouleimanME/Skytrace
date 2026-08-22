@@ -124,3 +124,26 @@ models:
                 max_value: 1000
               config:
                 severity: warn
+
+  - name: stg_opensky__aircraft
+    description: >
+      Base aeronefs OpenSky typee et dedupliquee (une ligne par appareil).
+    columns:
+      - name: aircraft_icao24
+        data_tests:
+          - not_null
+          - unique
+      - name: aircraft_type
+        description: Code type d'aeronef (A320, B738...).
+
+  - name: stg_openflights__airlines
+    description: >
+      Referentiel compagnies OpenFlights, une ligne par code OACI (3 lettres).
+    columns:
+      - name: airline_icao
+        data_tests:
+          - not_null
+          - unique
+      - name: airline_name
+        data_tests:
+          - not_null

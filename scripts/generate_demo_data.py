@@ -227,6 +227,80 @@ def write_air_quality(settings, now, hours: int, rng: random.Random) -> int:
     return len(rows)
 
 
+# Compagnies de demo (prefixe d'indicatif -> nom), alignees sur les callsigns
+# generes par build_state_vector.
+DEMO_AIRLINES = [
+    ("AFR", "Air France", "AF", "France"),
+    ("BAW", "British Airways", "BA", "United Kingdom"),
+    ("DLH", "Lufthansa", "LH", "Germany"),
+    ("EZY", "easyJet", "U2", "United Kingdom"),
+    ("RYR", "Ryanair", "FR", "Ireland"),
+    ("KLM", "KLM Royal Dutch Airlines", "KL", "Netherlands"),
+]
+
+DEMO_MANUFACTURERS = [
+    ("Airbus", "A320", "A320-214"),
+    ("Airbus", "A20N", "A320neo"),
+    ("Boeing", "B738", "737-800"),
+    ("Boeing", "B77W", "777-300ER"),
+    ("Embraer", "E190", "ERJ 190-100"),
+    ("ATR", "AT76", "ATR 72-600"),
+]
+
+
+def write_aircraft_db(settings, rng: random.Random, n: int = 300) -> int:
+    """Base aeronefs synthetique couvrant les icao24 de demo."""
+    from skytrace.ingestion.fleet import AIRCRAFT_DB_COLUMNS
+
+    rows = []
+    for i in range(n):
+        maker, typecode, model = rng.choice(DEMO_MANUFACTURERS)
+        operator = rng.choice(DEMO_AIRLINES)[1]
+        rows.append(
+            {
+                "icao24": f"{i:06x}",
+                "registration": f"F-{rng.choice('GH')}{rng.randint(100, 999)}",
+                "typecode": typecode,
+                "manufacturername": maker,
+                "model": model,
+                "operator": operator,
+                "operatoricao": "",
+                "owner": operator,
+                "built": str(rng.randint(1998, 2023)),
+                "categoryDescription": "",
+            }
+        )
+    schema = pa.schema([pa.field(c, pa.string()) for c in AIRCRAFT_DB_COLUMNS])
+    destination = settings.aircraft_db_dir / "aircraft_database.parquet"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(pa.Table.from_pylist(rows, schema=schema), destination, compression="zstd")
+    return len(rows)
+
+
+def write_airlines(settings) -> int:
+    """Referentiel compagnies synthetique (prefixes d'indicatif de demo)."""
+    from skytrace.ingestion.fleet import AIRLINES_COLUMNS
+
+    rows = [
+        {
+            "airline_id": str(index),
+            "name": name,
+            "alias": "",
+            "iata": iata,
+            "icao": icao,
+            "callsign": name.upper(),
+            "country": country,
+            "active": "Y",
+        }
+        for index, (icao, name, iata, country) in enumerate(DEMO_AIRLINES, start=1)
+    ]
+    schema = pa.schema([pa.field(c, pa.string()) for c in AIRLINES_COLUMNS])
+    destination = settings.airlines_dir / "airlines.parquet"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(pa.Table.from_pylist(rows, schema=schema), destination, compression="zstd")
+    return len(rows)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--hours", type=int, default=6, help="Profondeur d'historique simulee.")
@@ -268,8 +342,11 @@ def main() -> int:
         total_files += 1
 
     aq_rows = write_air_quality(settings, now, args.hours, rng)
+    ac_rows = write_aircraft_db(settings, rng)
+    al_rows = write_airlines(settings)
     print(f"Trafic     : {total_files} snapshots, {total_rows} positions")
     print(f"Qualite air: {aq_rows} lignes horaires")
+    print(f"Flotte     : {ac_rows} aeronefs, {al_rows} compagnies")
     print(f"Lac        : {settings.resolved_data_dir}")
     print("\nEtape suivante : skytrace dbt build")
     return 0

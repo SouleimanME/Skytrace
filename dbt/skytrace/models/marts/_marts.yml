@@ -199,3 +199,38 @@ models:
           - accepted_range:
               arguments:
                 min_value: 1
+
+  - name: dim_airline
+    description: >
+      Dimension compagnie (OpenFlights). Grain : un code OACI de compagnie.
+    columns:
+      - name: airline_icao
+        data_tests:
+          - not_null
+          - unique
+      - name: airline_name
+        data_tests:
+          - not_null
+
+  - name: fct_airline_airport_activity
+    description: >
+      Activite par compagnie et par aeroport (part de marche des compagnies).
+      airline_name est nul quand l'indicatif ne correspond a aucune compagnie
+      connue.
+    columns:
+      - name: airport_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_airport')
+                field: airport_id
+      - name: airline_icao
+        data_tests:
+          - not_null
+      - name: distinct_aircraft
+        data_tests:
+          - not_null
+          - accepted_range:
+              arguments:
+                min_value: 1

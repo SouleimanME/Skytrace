@@ -22,7 +22,7 @@ sources:
         meta:
           external_location: >-
             read_parquet(
-              '{{ env_var("SKYTRACE_DATA_DIR") }}/raw/opensky_states/**/*.parquet',
+              '{{ env_var("SKYTRACE_LAKE_URI") }}/opensky_states/**/*.parquet',
               hive_partitioning = true,
               union_by_name = true
             )
@@ -40,7 +40,7 @@ sources:
           evolution lente rafraichie une fois par jour.
         meta:
           external_location: >-
-            read_parquet('{{ env_var("SKYTRACE_DATA_DIR") }}/raw/ourairports/airports.parquet')
+            read_parquet('{{ env_var("SKYTRACE_LAKE_URI") }}/ourairports/airports.parquet')
         columns:
           - name: ident
             description: Code identifiant de l'aerodrome (souvent OACI).
@@ -58,9 +58,34 @@ sources:
           error_after: { count: 96, period: hour }
         meta:
           external_location: >-
-            read_parquet('{{ env_var("SKYTRACE_DATA_DIR") }}/raw/open_meteo_air_quality/air_quality.parquet')
+            read_parquet('{{ env_var("SKYTRACE_LAKE_URI") }}/open_meteo_air_quality/air_quality.parquet')
         columns:
           - name: airport_icao
             description: Code OACI de l'aeroport - cle de jointure avec dim_airport.
           - name: measured_at
             description: Heure de la mesure (UTC).
+
+      - name: opensky_aircraft_db
+        description: >
+          Base aeronefs OpenSky (~500 000 appareils) : type, constructeur,
+          modele, operateur par adresse OACI 24 bits. Troisieme source,
+          enrichit dim_aircraft. Dimension a evolution lente (mensuelle).
+        meta:
+          external_location: >-
+            read_parquet('{{ env_var("SKYTRACE_LAKE_URI") }}/opensky_aircraft_db/aircraft_database.parquet')
+        columns:
+          - name: icao24
+            description: Adresse OACI 24 bits - cle de jointure avec les positions.
+          - name: typecode
+            description: Code type d'aeronef (A320, B738...).
+
+      - name: openflights_airlines
+        description: >
+          Referentiel compagnies OpenFlights : code OACI (prefixe d'indicatif)
+          -> nom et pays de la compagnie. Reference statique.
+        meta:
+          external_location: >-
+            read_parquet('{{ env_var("SKYTRACE_LAKE_URI") }}/openflights_airlines/airlines.parquet')
+        columns:
+          - name: icao
+            description: Code OACI de la compagnie (3 lettres), prefixe des indicatifs.

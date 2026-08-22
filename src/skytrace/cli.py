@@ -6,6 +6,7 @@ de la meme maniere depuis un terminal, depuis Dagster ou depuis la CI.
     skytrace ingest-states       # un snapshot du trafic -> couche bronze
     skytrace ingest-airports     # rafraichit le referentiel aeroports
     skytrace ingest-air-quality  # qualite de l'air autour des aeroports
+    skytrace ingest-fleet        # base aeronefs + compagnies (type, operateur)
     skytrace dbt build           # transforme + teste (dbt est appele ici)
     skytrace pipeline            # ingestion + transformation, en une fois
     skytrace dagster             # orchestrateur, avec etat persistant
@@ -66,6 +67,30 @@ def cmd_ingest_air_quality(_: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ingest_fleet(_: argparse.Namespace) -> int:
+    from skytrace.ingestion import ingest_aircraft_db, ingest_airlines
+
+    settings = get_settings()
+    airlines = ingest_airlines(settings)
+    aircraft = ingest_aircraft_db(settings)
+    print(f"{aircraft.rows} aeronefs | {airlines.rows} compagnies")
+    return 0
+
+
+def cmd_storage_check(_: argparse.Namespace) -> int:
+    from skytrace.storage import check_connectivity
+
+    settings = get_settings()
+    backend = "R2" if settings.uses_r2 else "disque local"
+    try:
+        uri = check_connectivity(settings)
+    except Exception as exc:  # noqa: BLE001 - message clair pour l'operateur
+        logger.error("Acces au lac (%s) impossible : %s", backend, exc)
+        return 1
+    print(f"Acces au lac OK ({backend}) : ecriture/lecture reussie -> {uri}")
+    return 0
+
+
 def cmd_dbt(args: argparse.Namespace) -> int:
     """Passe-plat vers dbt, avec l'environnement correctement prepare.
 
@@ -87,8 +112,12 @@ def cmd_dbt(args: argparse.Namespace) -> int:
         "--profiles-dir",
         str(settings.dbt_project_dir),
     ]
+    # Cible r2 quand le lac est sur R2, dev sinon. On ne l'ajoute que si
+    # l'appelant ne l'a pas deja precisee.
+    if "--target" not in args.dbt_args and "-t" not in args.dbt_args:
+        command += ["--target", settings.dbt_target]
 
-    logger.info("dbt %s", " ".join(args.dbt_args))
+    logger.info("dbt %s (cible %s)", " ".join(args.dbt_args), settings.dbt_target)
     return subprocess.run(command, env=env, cwd=str(settings.dbt_project_dir)).returncode
 
 
@@ -205,13 +234,13 @@ def cmd_pipeline(args: argparse.Namespace) -> int:
     if (code := cmd_ingest_states(args)) != 0:
         return code
 
-    if args.with_reference:
-        if (code := cmd_ingest_airports(args)) != 0:
-            return code
-    elif not (get_settings().airports_dir / "airports.parquet").exists():
-        logger.info("Referentiel aeroports absent : premier telechargement")
-        if (code := cmd_ingest_airports(args)) != 0:
-            return code
+    from skytrace.storage import object_age_seconds
+
+    airports_age = object_age_seconds("ourairports/airports.parquet", get_settings())
+    airports_stale = airports_age is None or airports_age > 86400
+    # Absent ou vieux de plus d'un jour : (re)telecharge le referentiel.
+    if (args.with_reference or airports_stale) and (code := cmd_ingest_airports(args)) != 0:
+        return code
 
     # Qualite de l'air : dimension a evolution lente. On la rafraichit si elle
     # est absente ou perimee (plus de 6 h), pas a chaque cycle de 15/30 min -
@@ -219,24 +248,48 @@ def cmd_pipeline(args: argparse.Namespace) -> int:
     # pipeline : la source air quality est secondaire.
     _maybe_refresh_air_quality(get_settings())
 
+    # Referentiels flotte (base aeronefs + compagnies) : evolution tres lente,
+    # rafraichissement mensuel. Le telechargement de la base fait ~95 Mo, on
+    # evite donc de le refaire a chaque cycle.
+    _maybe_refresh_fleet(get_settings())
+
     build_args = argparse.Namespace(dbt_args=["build"])
     return cmd_dbt(build_args)
 
 
 def _maybe_refresh_air_quality(settings, *, max_age_hours: float = 6.0) -> None:
-    import time
-
     from skytrace.ingestion import ingest_air_quality
+    from skytrace.storage import object_age_seconds
 
-    path = settings.air_quality_dir / "air_quality.parquet"
-    fresh = path.exists() and (time.time() - path.stat().st_mtime) < max_age_hours * 3600
-    if fresh:
+    age = object_age_seconds("open_meteo_air_quality/air_quality.parquet", settings)
+    if age is not None and age < max_age_hours * 3600:
         return
     try:
         result = ingest_air_quality(settings)
         logger.info("Qualite de l'air rafraichie : %d lignes", result.rows)
     except Exception as exc:  # noqa: BLE001 - source secondaire, on n'interrompt pas
         logger.warning("Rafraichissement qualite de l'air ignore : %s", exc)
+
+
+def _maybe_refresh_fleet(settings, *, max_age_days: float = 25.0) -> None:
+    from skytrace.ingestion import ingest_aircraft_db, ingest_airlines
+    from skytrace.storage import object_age_seconds
+
+    aircraft_age = object_age_seconds("opensky_aircraft_db/aircraft_database.parquet", settings)
+    airlines_age = object_age_seconds("openflights_airlines/airlines.parquet", settings)
+    fresh = (
+        aircraft_age is not None
+        and airlines_age is not None
+        and aircraft_age < max_age_days * 86400
+    )
+    if fresh:
+        return
+    try:
+        ingest_airlines(settings)
+        result = ingest_aircraft_db(settings)
+        logger.info("Referentiels flotte rafraichis : %d aeronefs", result.rows)
+    except Exception as exc:  # noqa: BLE001 - source secondaire, on n'interrompt pas
+        logger.warning("Rafraichissement flotte ignore : %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -272,6 +325,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Rafraichit la qualite de l'air (Open-Meteo) autour des aeroports.",
     )
     air_quality.set_defaults(handler=cmd_ingest_air_quality)
+
+    fleet = subparsers.add_parser(
+        "ingest-fleet",
+        help="Rafraichit la base aeronefs (OpenSky) et les compagnies (OpenFlights).",
+    )
+    fleet.set_defaults(handler=cmd_ingest_fleet)
+
+    storage = subparsers.add_parser(
+        "storage-check",
+        help="Verifie l'acces au lac de donnees (local ou R2).",
+    )
+    storage.set_defaults(handler=cmd_storage_check)
 
     dbt = subparsers.add_parser(
         "dbt",

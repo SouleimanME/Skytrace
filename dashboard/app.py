@@ -1,4 +1,4 @@
-"""Tableau de bord SkyTrace.
+"""Tableau de bord SkyTrace (interface radar / HUD).
 
 Le tableau de bord ne connait que les tables `marts`. Il n'ouvre jamais un
 fichier Parquet et ne recalcule jamais une agregation : c'est le contrat de
@@ -10,11 +10,16 @@ Le pipeline est batch, pas streaming : la serie temporelle ne se
 point. La page se recharge donc periodiquement pour afficher les points
 nouvellement arrives, et signale explicitement si plus rien n'arrive.
 
+Le rendu vise une esthetique "cockpit" : fond sombre, grille technique,
+neons cyan / vert, typographie Orbitron. Le style vit dans THEME_CSS ; la
+logique de donnees est identique a une version sobre.
+
 Lancement : `skytrace dashboard` (ou `streamlit run dashboard/app.py`).
 """
 
 from __future__ import annotations
 
+import os
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -27,27 +32,177 @@ import streamlit as st
 # Permet un lancement direct par Streamlit, qui ne connait pas `src/`.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+# Streamlit Community Cloud fournit les secrets via st.secrets (TOML), pas via
+# l'environnement. On les recopie dans os.environ AVANT get_settings() pour que
+# la configuration (region, R2...) les prenne en compte.
+for _key in (
+    "SKYTRACE_REGION",
+    "SKYTRACE_R2_ACCOUNT_ID",
+    "SKYTRACE_R2_BUCKET",
+    "SKYTRACE_R2_ACCESS_KEY_ID",
+    "SKYTRACE_R2_SECRET_ACCESS_KEY",
+):
+    try:
+        if _key in st.secrets:
+            os.environ.setdefault(_key, str(st.secrets[_key]))
+    except Exception:  # noqa: BLE001 - pas de fichier secrets en local : sans effet
+        break
+
 from skytrace.config import get_settings  # noqa: E402
 from skytrace.warehouse.duck import WAREHOUSE_TIMEZONE  # noqa: E402
 
 SETTINGS = get_settings()
 
 st.set_page_config(
-    page_title="SkyTrace - trafic aerien",
+    page_title="SkyTrace - radar ADS-B",
     layout="wide",
+    initial_sidebar_state="expanded",
 )
 
+#: Palette neon, reutilisee par les graphes et le theme CSS.
+NEON = ["#00e5ff", "#2b6bff", "#31f2a0", "#ffb020", "#ff4d6d", "#b388ff", "#8be9fd"]
+
 PHASE_COLOURS = {
-    "croisiere": "#2563eb",
-    "montee": "#16a34a",
-    "descente": "#ea580c",
-    "sol": "#64748b",
-    "inconnu": "#a1a1aa",
+    "croisiere": "#00e5ff",
+    "montee": "#31f2a0",
+    "descente": "#ffb020",
+    "sol": "#3b5a8a",
+    "inconnu": "#6b7ea6",
 }
 
-#: Cadence du planning Dagster. Sert de reference pour juger si la donnee
-#: est fraiche : au-dela de deux cycles manques, quelque chose ne tourne pas.
+#: Cadence du planning. Sert de reference pour juger de la fraicheur.
 SCHEDULE_MINUTES = 15
+
+
+# ---------------------------------------------------------------------------
+# Theme (cockpit / HUD)
+# ---------------------------------------------------------------------------
+THEME_CSS = """
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Share+Tech+Mono&family=Rajdhani:wght@400;500;600;700&display=swap');
+
+:root{
+  --cyan:#00e5ff; --blue:#2b6bff; --green:#31f2a0; --amber:#ffb020; --red:#ff4d6d;
+  --text:#dbe7ff; --muted:#6b7ea6; --line:rgba(0,229,255,0.20);
+  --panel:rgba(12,20,38,0.72); --grid:rgba(60,130,210,0.09);
+}
+
+.stApp{
+  background:
+    radial-gradient(1200px 700px at 82% -12%, rgba(43,107,255,0.12), transparent 60%),
+    radial-gradient(900px 650px at -5% 105%, rgba(0,229,255,0.09), transparent 55%),
+    linear-gradient(180deg,#04070e 0%, #060b16 100%);
+  background-attachment: fixed;
+}
+.stApp::before{
+  content:""; position:fixed; inset:0; pointer-events:none; z-index:0;
+  background-image:
+    linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size: 42px 42px;
+  -webkit-mask-image: radial-gradient(ellipse at 50% 35%, black 35%, transparent 82%);
+          mask-image: radial-gradient(ellipse at 50% 35%, black 35%, transparent 82%);
+}
+.block-container{position:relative; z-index:1; padding-top:1.4rem; max-width:1500px;}
+
+body, .stApp, p, span, label, li, div[data-testid="stMarkdownContainer"]{
+  color:var(--text); font-family:'Rajdhani','Segoe UI',sans-serif;
+}
+h1,h2,h3{ font-family:'Orbitron','Segoe UI',sans-serif !important; letter-spacing:2px; text-transform:uppercase;}
+h2,h3{ color:var(--cyan); text-shadow:0 0 16px rgba(0,229,255,0.30); font-weight:700;}
+h2{ font-size:1.15rem;} h3{ font-size:1.0rem;}
+
+/* -- bandeau titre HUD -- */
+.hud{
+  border:1px solid var(--line); border-radius:14px; padding:18px 22px; margin-bottom:6px;
+  background: linear-gradient(120deg, rgba(0,229,255,0.06), rgba(43,107,255,0.04));
+  box-shadow: inset 0 0 40px rgba(0,229,255,0.05), 0 0 30px rgba(2,8,20,0.6);
+  backdrop-filter: blur(6px);
+  display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;
+}
+.hud-title{ font-family:'Orbitron',sans-serif; font-weight:900; font-size:2.1rem; letter-spacing:6px;
+  color:#eaf9ff; text-shadow:0 0 18px rgba(0,229,255,0.55), 0 0 3px #fff; margin:0;
+  animation: pulse 3.2s ease-in-out infinite;}
+@keyframes pulse{ 0%,100%{text-shadow:0 0 14px rgba(0,229,255,0.40);} 50%{text-shadow:0 0 26px rgba(0,229,255,0.75);} }
+.hud-sub{ font-family:'Share Tech Mono',monospace; color:var(--muted); font-size:.82rem; letter-spacing:2px;}
+.hud-badge{ font-family:'Share Tech Mono',monospace; font-size:.75rem; letter-spacing:2px;
+  border:1px solid var(--line); border-radius:20px; padding:6px 14px; color:var(--cyan);
+  box-shadow:inset 0 0 14px rgba(0,229,255,0.10);}
+
+/* -- puce de statut -- */
+.hud-status{ font-family:'Share Tech Mono',monospace; font-size:.85rem; letter-spacing:1px;
+  border-radius:10px; padding:10px 16px; margin:2px 0 6px; border:1px solid var(--line);
+  background:var(--panel); display:flex; align-items:center; gap:10px; backdrop-filter:blur(6px);}
+.hud-status .dot{ width:10px; height:10px; border-radius:50%; box-shadow:0 0 12px currentColor; animation:blink 1.6s infinite;}
+@keyframes blink{ 0%,100%{opacity:1;} 50%{opacity:.35;} }
+.hud-status.ok{ color:var(--green);} .hud-status.ok .dot{ background:var(--green);}
+.hud-status.warn{ color:var(--amber);} .hud-status.warn .dot{ background:var(--amber);}
+.hud-status.err{ color:var(--red);} .hud-status.err .dot{ background:var(--red);}
+
+/* -- metriques = panneaux HUD, chiffres mis en avant -- */
+[data-testid="stMetric"]{
+  background: linear-gradient(160deg, rgba(0,229,255,0.07), var(--panel) 62%);
+  border:1px solid var(--line); border-radius:12px; padding:16px 18px 12px;
+  box-shadow: inset 0 0 26px rgba(0,229,255,0.06), 0 0 22px rgba(2,8,20,0.55);
+  backdrop-filter: blur(6px); position:relative; overflow:hidden;
+  transition: box-shadow .2s ease, transform .2s ease;
+}
+[data-testid="stMetric"]:hover{
+  transform: translateY(-2px);
+  box-shadow: inset 0 0 32px rgba(0,229,255,0.11), 0 0 28px rgba(0,229,255,0.20);
+}
+[data-testid="stMetric"]::after{ content:""; position:absolute; left:0; top:0; width:100%; height:3px;
+  background:linear-gradient(90deg,transparent,var(--cyan),transparent); opacity:.9;
+  box-shadow:0 0 10px var(--cyan);}
+[data-testid="stMetricValue"]{ font-family:'Share Tech Mono',monospace !important; color:#f2fbff;
+  font-size:2.45rem; font-weight:400; line-height:1.08; text-shadow:0 0 20px rgba(0,229,255,0.60);}
+[data-testid="stMetricLabel"] p{ color:var(--cyan) !important; text-transform:uppercase;
+  letter-spacing:2px; font-size:.68rem; font-family:'Share Tech Mono',monospace; opacity:.85;}
+
+hr{ border:none; height:1px; background:linear-gradient(90deg,transparent,var(--line),transparent); margin:1.1rem 0;}
+
+[data-testid="stSidebar"]{ background:linear-gradient(180deg,#060b16,#04070e); border-right:1px solid var(--line);}
+[data-testid="stSidebar"] *{ color:var(--text);}
+
+[data-testid="stDataFrame"]{ border:1px solid var(--line); border-radius:12px; overflow:hidden;
+  box-shadow:0 0 20px rgba(2,8,20,0.5);}
+
+.stButton>button{ background:transparent; border:1px solid var(--cyan); color:var(--cyan);
+  text-transform:uppercase; letter-spacing:1.5px; font-family:'Share Tech Mono',monospace;
+  border-radius:9px; transition:all .2s;}
+.stButton>button:hover{ box-shadow:0 0 18px rgba(0,229,255,0.45); background:rgba(0,229,255,0.08); color:#eaf9ff;}
+
+[data-testid="stAlert"]{ background:var(--panel) !important; border:1px solid var(--line);
+  border-radius:12px; backdrop-filter:blur(6px);}
+[data-testid="stCaptionContainer"] p{ color:var(--muted); font-family:'Share Tech Mono',monospace; font-size:.74rem;}
+[data-testid="stElementToolbar"]{ display:none;}
+"""
+
+
+def inject_theme() -> None:
+    st.markdown(f"<style>{THEME_CSS}</style>", unsafe_allow_html=True)
+
+
+def style_fig(fig, height: int | None = None):
+    """Applique le theme cockpit a une figure Plotly."""
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        colorway=NEON,
+        font={"family": "Share Tech Mono, monospace", "color": "#9fb4d8", "size": 12},
+        margin={"l": 8, "r": 8, "t": 14, "b": 6},
+        xaxis={"gridcolor": "rgba(70,130,210,0.12)", "zerolinecolor": "rgba(70,130,210,0.2)"},
+        yaxis={"gridcolor": "rgba(70,130,210,0.12)", "zerolinecolor": "rgba(70,130,210,0.2)"},
+        legend={"bgcolor": "rgba(0,0,0,0)"},
+        hoverlabel={
+            "bgcolor": "#0a1120",
+            "bordercolor": "#00e5ff",
+            "font": {"family": "Share Tech Mono, monospace", "color": "#eaf9ff"},
+        },
+    )
+    if height:
+        fig.update_layout(height=height)
+    return fig
 
 
 # ---------------------------------------------------------------------------
@@ -61,8 +216,7 @@ def load(sql: str) -> pd.DataFrame:
     et le tableau de bord ne doit jamais bloquer un run dbt en cours.
 
     Le cache est volontairement tres court (10 s) : il ne sert qu'a
-    dedupliquer les appels d'un meme rendu, pas a garder la donnee. Un
-    cache long irait a l'encontre du rafraichissement automatique.
+    dedupliquer les appels d'un meme rendu, pas a garder la donnee.
 
     Le fuseau est force en UTC : DuckDB rend sinon les TIMESTAMPTZ dans le
     fuseau de la machine, et la page afficherait des heures locales sous
@@ -86,34 +240,47 @@ def warehouse_is_ready() -> tuple[bool, str]:
     return True, ""
 
 
+#: Sur R2, le collecteur n'ecrit pas dans git : Streamlit ne se redeploie
+#: donc pas tout seul. Le dashboard reconstruit l'entrepot depuis R2 a
+#: intervalle regulier (le `bucket` temporel casse le cache).
+REBUILD_INTERVAL_SECONDS = 600
+
+
+def _needs_rebuild() -> bool:
+    import time
+
+    duckdb_path = SETTINGS.resolved_duckdb_path
+    if SETTINGS.uses_r2:
+        # Lac distant : on ne peut pas se fier aux fichiers locaux. On
+        # reconstruit si l'entrepot est absent ou plus vieux que l'intervalle.
+        if not duckdb_path.exists():
+            return True
+        return (time.time() - duckdb_path.stat().st_mtime) > REBUILD_INTERVAL_SECONDS
+
+    # Lac local : reconstruire seulement si un fichier source est plus recent.
+    states = sorted(SETTINGS.states_dir.rglob("*.parquet"))
+    if not states:
+        return False
+    newest = max(path.stat().st_mtime for path in states)
+    return (not duckdb_path.exists()) or duckdb_path.stat().st_mtime < newest
+
+
 @st.cache_resource(show_spinner="Construction de l'entrepot a partir du lac de donnees...")
-def ensure_warehouse_built() -> None:
-    """Reconstruit les marts a partir du lac Parquet si necessaire.
+def ensure_warehouse_built(bucket: int) -> None:
+    """Reconstruit les marts a partir du lac (local ou R2) si necessaire.
 
-    Sur un environnement neuf - typiquement Streamlit Community Cloud - seul
-    le lac Parquet est versionne ; la base DuckDB, elle, est regeneree. Cette
-    fonction lance `dbt build` quand la base est absente ou plus ancienne que
-    le dernier fichier ingere. En local, ou la base existe deja et est a
-    jour, elle ne fait rien.
-
-    `st.cache_resource` garantit une seule execution par demarrage de l'app.
-    Comme chaque publication de donnees redeploie l'app sur Streamlit Cloud,
-    le cache repart a froid et la reconstruction capte la donnee fraiche.
+    `bucket` est un compteur temporel : quand il change (toutes les
+    REBUILD_INTERVAL_SECONDS), st.cache_resource rejoue la fonction, ce qui
+    permet au dashboard R2 de capter les nouvelles donnees sans redeploiement.
+    Il fait partie de la cle de cache - ne pas le prefixer d'un underscore.
     """
+    _ = bucket  # sert uniquement de cle de cache
     import os
     import subprocess
     import sys
 
-    states = sorted(SETTINGS.states_dir.rglob("*.parquet"))
-    if not states:
-        # Aucune donnee encore collectee (juste avant la premiere execution
-        # du workflow). warehouse_is_ready() affichera l'invite appropriee.
+    if not _needs_rebuild():
         return
-
-    duckdb_path = SETTINGS.resolved_duckdb_path
-    newest_source = max(path.stat().st_mtime for path in states)
-    if duckdb_path.exists() and duckdb_path.stat().st_mtime >= newest_source:
-        return  # deja a jour, rien a reconstruire
 
     SETTINGS.ensure_directories()
     subprocess.run(
@@ -126,6 +293,8 @@ def ensure_warehouse_built() -> None:
             str(SETTINGS.dbt_project_dir),
             "--profiles-dir",
             str(SETTINGS.dbt_project_dir),
+            "--target",
+            SETTINGS.dbt_target,
         ],
         env={**os.environ, **SETTINGS.dbt_env()},
         cwd=str(SETTINGS.dbt_project_dir),
@@ -136,21 +305,48 @@ def ensure_warehouse_built() -> None:
 # ---------------------------------------------------------------------------
 # En-tete et commandes
 # ---------------------------------------------------------------------------
-st.title("SkyTrace")
-st.caption(
-    "Trafic aerien observe via ADS-B (OpenSky Network) - "
-    f"zone **{SETTINGS.region}**, donnees agregees par la couche `marts`."
+def display_region() -> str:
+    """Zone du dernier releve, lue dans la donnee plutot que dans la config.
+
+    Le collecteur peut changer de zone ; le header doit refleter ce qui a
+    reellement ete collecte, pas un parametre. Repli sur la config si
+    l'entrepot n'est pas encore lisible.
+    """
+    try:
+        df = load(
+            "select ingestion_region from marts.fct_aircraft_positions "
+            "order by snapshot_at desc limit 1"
+        )
+        if not df.empty and df.iloc[0]["ingestion_region"]:
+            return str(df.iloc[0]["ingestion_region"])
+    except Exception:  # noqa: BLE001 - repli silencieux
+        pass
+    return SETTINGS.region
+
+
+inject_theme()
+
+st.markdown(
+    f"""
+    <div class="hud">
+      <div>
+        <div class="hud-title">SKYTRACE</div>
+        <div class="hud-sub">ADS-B LIVE RADAR // ZONE {display_region().upper()} // COUCHE MARTS</div>
+      </div>
+      <div class="hud-badge">OPENSKY &middot; OURAIRPORTS &middot; OPEN-METEO &middot; OPENFLIGHTS</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
 )
 
 with st.sidebar:
-    st.header("Rafraichissement")
+    st.header("Console")
     auto_refresh = st.toggle(
-        "Automatique",
+        "Rafraichissement auto",
         value=True,
         help=(
-            "Recharge la page periodiquement. Le pipeline etant batch, "
-            "de nouvelles donnees n'apparaissent qu'apres une execution "
-            "du planning Dagster."
+            "Recharge la page periodiquement. Le pipeline etant batch, de "
+            "nouvelles donnees n'apparaissent qu'apres une execution planifiee."
         ),
     )
     interval_label = st.selectbox(
@@ -171,12 +367,12 @@ with st.sidebar:
         "(`traffic_every_15_minutes` dans Dagster)."
     )
 
-# Sur un environnement neuf, construire l'entrepot avant toute lecture. Une
-# reconstruction en echec (ex : lac pas encore publie) n'interrompt pas la
-# page : warehouse_is_ready() prend le relais avec un message clair.
+# Sur un environnement neuf, construire l'entrepot avant toute lecture.
 try:
-    ensure_warehouse_built()
-except Exception as exc:  # noqa: BLE001 - on veut une degradation douce, pas une trace
+    import time as _time
+
+    ensure_warehouse_built(int(_time.time() // REBUILD_INTERVAL_SECONDS))
+except Exception as exc:  # noqa: BLE001 - degradation douce, pas de trace
     st.warning(f"Entrepot pas encore disponible : {exc}")
 
 ready, message = warehouse_is_ready()
@@ -193,6 +389,13 @@ if not ready:
 # ---------------------------------------------------------------------------
 # Rendu
 # ---------------------------------------------------------------------------
+def status_chip(level: str, text: str) -> None:
+    st.markdown(
+        f'<div class="hud-status {level}"><span class="dot"></span>{text}</div>',
+        unsafe_allow_html=True,
+    )
+
+
 @st.fragment(run_every=interval_seconds if auto_refresh else None)
 def render() -> None:
     """Corps du tableau de bord, reexecute a chaque rafraichissement.
@@ -203,8 +406,6 @@ def render() -> None:
     try:
         _render_body()
     except duckdb.IOException:
-        # Un run dbt tient le verrou d'ecriture pendant une seconde ou deux.
-        # C'est transitoire : on l'annonce au lieu d'afficher une trace.
         st.info("Mise a jour de l'entrepot en cours, affichage dans un instant.")
 
 
@@ -230,24 +431,19 @@ def _render_body() -> None:
     age_minutes = (datetime.now(UTC) - last_seen.to_pydatetime()).total_seconds() / 60
     span_hours = (overview["fin"] - overview["debut"]).total_seconds() / 3600
 
-    # Deux cycles manques : le planning est probablement a l'arret. C'est la
-    # question que se pose vraiment quelqu'un devant un graphique plat.
     if age_minutes <= SCHEDULE_MINUTES + 5:
-        st.success(
-            f"Donnees a jour - dernier releve il y a {age_minutes:.0f} min "
-            f"({last_seen:%H:%M:%S} UTC).",
+        status_chip(
+            "ok",
+            f"SIGNAL NOMINAL // dernier releve il y a {age_minutes:.0f} min "
+            f"({last_seen:%H:%M:%S} UTC)",
         )
     elif age_minutes <= SCHEDULE_MINUTES * 3:
-        st.warning(
-            f"Dernier releve il y a {age_minutes:.0f} min - un cycle de "
-            f"collecte semble avoir ete manque.",
-        )
+        status_chip("warn", f"CYCLE MANQUE // dernier releve il y a {age_minutes:.0f} min")
     else:
-        st.error(
-            f"Aucune donnee nouvelle depuis {age_minutes / 60:.1f} h. "
-            "Le planning `traffic_every_15_minutes` est probablement inactif : "
-            "l'activer dans l'onglet Automation de Dagster, sans quoi la serie "
-            "temporelle ne se remplira pas.",
+        status_chip(
+            "err",
+            f"SIGNAL PERDU // aucune donnee depuis {age_minutes / 60:.1f} h - "
+            "activer le planning dans Dagster",
         )
 
     # -- Indicateurs cles --------------------------------------------------
@@ -256,13 +452,11 @@ def _render_body() -> None:
     columns[1].metric("Aeronefs distincts", f"{int(overview['aeronefs']):,}".replace(",", " "))
     columns[2].metric("Snapshots", f"{int(overview['snapshots']):,}".replace(",", " "))
     columns[3].metric("Aeroports actifs", int(airports_active))
-    columns[4].metric("Profondeur d'historique", f"{span_hours:.1f} h")
+    columns[4].metric("Historique", f"{span_hours:.1f} h")
 
     st.divider()
 
     # -- Serie par snapshot ------------------------------------------------
-    # Granularite native de la collecte : un point par execution. Contrairement
-    # a l'agregat horaire, elle devient lisible des le deuxieme releve.
     st.subheader("Trafic releve par releve")
 
     per_snapshot = load(
@@ -271,8 +465,7 @@ def _render_body() -> None:
             snapshot_at,
             count(*)                                                       as positions,
             count(distinct aircraft_icao24)                                as aeronefs,
-            count(distinct case when is_on_ground then aircraft_icao24 end) as au_sol,
-            round(avg(barometric_altitude_ft))                             as altitude_moyenne_ft
+            count(distinct case when is_on_ground then aircraft_icao24 end) as au_sol
         from marts.fct_aircraft_positions
         group by snapshot_at
         order by snapshot_at
@@ -290,29 +483,33 @@ def _render_body() -> None:
             x="snapshot_at",
             y=["aeronefs", "au_sol"],
             markers=True,
-            labels={
-                "snapshot_at": "Instant du releve (UTC)",
-                "value": "Aeronefs",
-                "variable": "",
-            },
-            height=340,
-            color_discrete_map={"aeronefs": "#2563eb", "au_sol": "#64748b"},
+            labels={"snapshot_at": "Instant du releve (UTC)", "value": "Aeronefs", "variable": ""},
+            color_discrete_map={"aeronefs": "#00e5ff", "au_sol": "#3b5a8a"},
         )
-        series.update_layout(
-            margin={"l": 0, "r": 0, "t": 10, "b": 0},
-            legend={"orientation": "h", "y": 1.12, "x": 0},
-            hovermode="x unified",
+        series.update_traces(
+            line={"width": 2.6},
+            hovertemplate="<b>%{y:.0f}</b> %{fullData.name}<extra></extra>",
+        )
+        style_fig(series, height=340)
+        series.update_layout(legend={"orientation": "h", "y": 1.14, "x": 0}, hovermode="x unified")
+        # Spike propre : un fin trait cyan continu au lieu du pointille par defaut.
+        series.update_xaxes(
+            showspikes=True,
+            spikemode="across",
+            spikethickness=1,
+            spikedash="solid",
+            spikecolor="rgba(0,229,255,0.45)",
         )
         st.plotly_chart(series, use_container_width=True)
         st.caption(
             f"{len(per_snapshot)} releves. Chaque point est une execution du "
-            "pipeline : c'est la granularite reelle de la collecte."
+            "pipeline : la granularite reelle de la collecte."
         )
 
     st.divider()
 
     # -- Carte du dernier releve -------------------------------------------
-    st.subheader("Dernier releve")
+    st.subheader("Radar // dernier releve")
 
     latest = load(
         """
@@ -349,6 +546,8 @@ def _render_body() -> None:
                 },
                 labels={"flight_phase": "Phase"},
             )
+            style_fig(figure)
+            figure.update_traces(marker={"size": 7, "opacity": 0.85})
             figure.update_layout(
                 map_style="carto-darkmatter",
                 margin={"l": 0, "r": 0, "t": 0, "b": 0},
@@ -363,13 +562,17 @@ def _render_body() -> None:
                 phases,
                 names="flight_phase",
                 values="aeronefs",
-                hole=0.55,
+                hole=0.62,
                 color="flight_phase",
                 color_discrete_map=PHASE_COLOURS,
-                title="Phases de vol",
             )
-            donut.update_layout(margin={"l": 0, "r": 0, "t": 40, "b": 0}, showlegend=False)
-            donut.update_traces(textinfo="label+value")
+            donut.update_traces(
+                textinfo="label+value",
+                textfont={"family": "Share Tech Mono, monospace", "size": 11},
+                marker={"line": {"color": "#04070e", "width": 2}},
+            )
+            style_fig(donut, height=240)
+            donut.update_layout(showlegend=False, margin={"l": 0, "r": 0, "t": 6, "b": 0})
             st.plotly_chart(donut, use_container_width=True)
 
             st.metric(
@@ -385,10 +588,7 @@ def _render_body() -> None:
 
     hourly = load(
         """
-        select
-            traffic_hour,
-            sum(position_count)           as positions,
-            round(avg(avg_altitude_m), 0) as altitude_moyenne_m
+        select traffic_hour, sum(position_count) as positions
         from marts.fct_traffic_hourly
         group by traffic_hour
         order by traffic_hour
@@ -406,10 +606,12 @@ def _render_body() -> None:
             x="traffic_hour",
             y="positions",
             labels={"traffic_hour": "Heure (UTC)", "positions": "Positions collectees"},
-            height=320,
         )
-        trend.update_traces(line_color="#2563eb", fillcolor="rgba(37, 99, 235, 0.18)")
-        trend.update_layout(margin={"l": 0, "r": 0, "t": 10, "b": 0})
+        trend.update_traces(
+            line={"color": "#00e5ff", "width": 2.2},
+            fillcolor="rgba(0,229,255,0.14)",
+        )
+        style_fig(trend, height=300)
         st.plotly_chart(trend, use_container_width=True)
         st.caption(
             "Agregat issu de `fct_traffic_hourly`. C'est ici que le creux "
@@ -438,10 +640,9 @@ def _render_body() -> None:
             y="origin_country",
             orientation="h",
             labels={"positions": "Positions", "origin_country": ""},
-            height=420,
         )
-        chart.update_traces(marker_color="#2563eb")
-        chart.update_layout(margin={"l": 0, "r": 0, "t": 10, "b": 0})
+        chart.update_traces(marker={"color": "#00e5ff", "opacity": 0.85})
+        style_fig(chart, height=420)
         st.plotly_chart(chart, use_container_width=True)
 
     with airports_column:
@@ -466,6 +667,93 @@ def _render_body() -> None:
             "Les colonnes *en approche* et *en montee* sont inferees du taux "
             "de montee : ADS-B ne publie pas de plan de vol."
         )
+
+    # -- Troisieme source : compagnies et flotte ---------------------------
+    st.divider()
+    st.subheader("Compagnies et flotte")
+
+    airline_rows = load(
+        "select count(*) as n from marts.fct_airline_airport_activity "
+        "where airline_name is not null"
+    ).iloc[0]["n"]
+
+    if not airline_rows:
+        st.info(
+            "Pas encore de donnees compagnies. La troisieme source (base "
+            "aeronefs OpenSky + compagnies OpenFlights) se remplit avec le pipeline.",
+        )
+    else:
+        fleet_left, fleet_right = st.columns(2)
+
+        with fleet_left:
+            top_airports = load(
+                """
+                select airport_iata_code, airport_label, sum(distinct_aircraft) as n
+                from marts.fct_airline_airport_activity
+                where airline_name is not null and airport_iata_code is not null
+                group by 1, 2
+                order by n desc
+                limit 12
+                """
+            )
+            labels = dict(
+                zip(
+                    top_airports["airport_iata_code"],
+                    top_airports["airport_label"],
+                    strict=False,
+                )
+            )
+            choice = st.selectbox(
+                "Part de marche des compagnies a...",
+                options=list(labels.keys()),
+                format_func=lambda code: labels.get(code, code),
+            )
+            here = load(
+                "select airline_name, sum(distinct_aircraft) as aeronefs "
+                "from marts.fct_airline_airport_activity "
+                f"where airport_iata_code = '{choice}' and airline_name is not null "
+                "group by 1 order by 2 desc limit 10"
+            )
+            bar = px.bar(
+                here.sort_values("aeronefs"),
+                x="aeronefs",
+                y="airline_name",
+                orientation="h",
+                labels={"aeronefs": "Aeronefs distincts", "airline_name": ""},
+            )
+            bar.update_traces(marker={"color": "#31f2a0", "opacity": 0.85})
+            style_fig(bar, height=360)
+            st.plotly_chart(bar, use_container_width=True)
+
+        with fleet_right:
+            makers = load(
+                """
+                select manufacturer_group, count(*) as aeronefs
+                from marts.dim_aircraft
+                where manufacturer_group <> 'Inconnu'
+                group by 1
+                order by 2 desc
+                """
+            )
+            donut = px.pie(
+                makers,
+                names="manufacturer_group",
+                values="aeronefs",
+                hole=0.58,
+                color_discrete_sequence=NEON,
+            )
+            donut.update_traces(
+                textinfo="label+percent",
+                textfont={"family": "Share Tech Mono, monospace", "size": 11},
+                marker={"line": {"color": "#04070e", "width": 2}},
+            )
+            style_fig(donut, height=360)
+            donut.update_layout(showlegend=False, title="Constructeurs (Airbus vs Boeing...)")
+            st.plotly_chart(donut, use_container_width=True)
+            st.caption(
+                "Type et constructeur issus de la base aeronefs OpenSky ; "
+                "compagnie deduite du prefixe d'indicatif (OpenFlights)."
+            )
 
     # -- Deuxieme source : trafic et qualite de l'air ----------------------
     st.divider()
@@ -500,19 +788,28 @@ def _render_body() -> None:
     else:
         left, right = st.columns([1, 2])
         with left:
-            st.metric("Corr. brute avions ~ NO2", f"{air_quality['r_naive']:+.2f}")
             st.metric(
-                "Corr. intra-aeroport",
+                "Correlation r (brute)",
+                f"{air_quality['r_naive']:+.2f}",
+                help=(
+                    "Coefficient de correlation de Pearson entre le nombre "
+                    "d'avions et le NO2, par heure. Sans unite, de -1 a +1 "
+                    "(0 = aucun lien). Le NO2 est mesure en microgrammes/m3."
+                ),
+            )
+            st.metric(
+                "Correlation r (intra-aeroport)",
                 f"{air_quality['r_within']:+.2f}",
                 help=(
-                    "Apres retrait de la moyenne de chaque aeroport. La "
-                    "correlation brute, positive, s'inverse : le lien n'est "
-                    "qu'un artefact 'entre aeroports'."
+                    "Meme coefficient, apres retrait de la moyenne de chaque "
+                    "aeroport. La correlation brute, positive, s'inverse : le "
+                    "lien n'est qu'un artefact 'entre aeroports'."
                 ),
             )
             st.caption(
+                "r = coefficient de correlation de Pearson (sans unite, -1 a +1). "
                 "A l'echelle horaire, le trafic aerien n'est pas un predicteur "
-                "detectable du NO2 au sol. Analyse complete dans "
+                "detectable du NO2 au sol. Analyse complete : "
                 "`docs/analyse_trafic_qualite_air.md`."
             )
         with right:
@@ -533,18 +830,18 @@ def _render_body() -> None:
                     "no2_ugm3": "NO2 au sol (ug/m3)",
                     "airport_iata_code": "Aeroport",
                 },
-                height=360,
             )
-            scatter.update_layout(margin={"l": 0, "r": 0, "t": 10, "b": 0})
+            scatter.update_traces(marker={"size": 7, "opacity": 0.75})
+            style_fig(scatter, height=360)
             st.plotly_chart(scatter, use_container_width=True)
 
     # -- Pied de page ------------------------------------------------------
     st.divider()
     st.caption(
-        f"Dernier releve : **{last_seen:%Y-%m-%d %H:%M:%S} UTC** | "
+        f"Dernier releve : {last_seen:%Y-%m-%d %H:%M:%S} UTC | "
         f"Page rafraichie a {datetime.now(UTC):%H:%M:%S} UTC | "
-        f"Entrepot : `{SETTINGS.resolved_duckdb_path.name}` | "
-        "Sources : OpenSky Network + OurAirports + Open-Meteo"
+        f"Entrepot : {SETTINGS.resolved_duckdb_path.name} | "
+        "Sources : OpenSky Network + OurAirports + Open-Meteo + OpenFlights"
     )
 
 

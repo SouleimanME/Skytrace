@@ -1,6 +1,7 @@
 """Couche d'ingestion : ecrit la donnee brute dans le lac (couche bronze)."""
 
 from skytrace.ingestion.air_quality import IngestedAirQuality, ingest_air_quality
+from skytrace.ingestion.fleet import ingest_aircraft_db, ingest_airlines
 from skytrace.ingestion.reference import IngestedReference, ingest_airports
 from skytrace.ingestion.states import IngestedSnapshot, ingest_states
 
@@ -9,6 +10,8 @@ __all__ = [
     "IngestedReference",
     "IngestedSnapshot",
     "ingest_air_quality",
+    "ingest_aircraft_db",
+    "ingest_airlines",
     "ingest_airports",
     "ingest_states",
 ]

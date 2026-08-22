@@ -20,10 +20,10 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 import pyarrow as pa
-import pyarrow.parquet as pq
 
 from skytrace.config import Settings, get_settings
 from skytrace.logging_conf import get_logger
+from skytrace.storage import write_parquet
 
 logger = get_logger(__name__)
 
@@ -85,11 +85,17 @@ AIR_QUALITY_SCHEMA = pa.schema(
 
 @dataclass(frozen=True)
 class IngestedAirQuality:
-    path: object
+    uri: str
     rows: int
     airports: int
     start_date: str
     end_date: str
+
+    @property
+    def path(self):
+        from pathlib import Path
+
+        return Path(self.uri)
 
 
 def _parse_hour(value: str) -> datetime:
@@ -185,8 +191,7 @@ def ingest_air_quality(
         row["source"] = "open-meteo/air-quality"
 
     table = pa.Table.from_pylist(all_rows, schema=AIR_QUALITY_SCHEMA)
-    destination = settings.air_quality_dir / "air_quality.parquet"
-    pq.write_table(table, destination, compression="zstd")
+    result = write_parquet("open_meteo_air_quality/air_quality.parquet", table, settings)
 
     logger.info(
         "Qualite de l'air ecrite : %d lignes, %d aeroports (%s -> %s) -> %s",
@@ -194,10 +199,10 @@ def ingest_air_quality(
         len(airports),
         start_str,
         end_str,
-        destination,
+        result.uri,
     )
     return IngestedAirQuality(
-        path=destination,
+        uri=result.uri,
         rows=table.num_rows,
         airports=len(airports),
         start_date=start_str,

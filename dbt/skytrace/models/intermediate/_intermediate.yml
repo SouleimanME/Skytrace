@@ -1,0 +1,34 @@
+version: 2
+
+models:
+  - name: int_positions_deduplicated
+    description: >
+      Positions dedupliquees : une seule ligne par couple (appareil, instant).
+      L'ingestion est idempotente mais pas exactement-une-fois ; deux workers
+      qui se chevauchent ou une relance produisent des doublons. Cette vue les
+      resout en gardant la version ingeree le plus tard. Sans elle, tous les
+      comptages d'aeronefs seraient gonfles silencieusement.
+    columns:
+      - name: aircraft_icao24
+        description: Adresse OACI 24 bits de l'appareil (premiere moitie de la cle de grain).
+        data_tests:
+          - not_null
+      - name: snapshot_at
+        description: Instant du releve (seconde moitie de la cle de grain).
+        data_tests:
+          - not_null
+
+  - name: int_positions_near_airports
+    description: >
+      Rapprochement geographique avion / aeroport. Pour chaque position en
+      phase basse (au sol ou sous le plafond d'approche), on cherche l'aeroport
+      le plus proche par blocking sur une grille de 1 degre, puis calcul de
+      haversine sur les seuls candidats voisins. Une ligne par (appareil,
+      instant) rattachee a son aeroport le plus proche dans le rayon retenu.
+    columns:
+      - name: aircraft_icao24
+        description: Appareil rattache.
+      - name: airport_id
+        description: Aeroport le plus proche dans le rayon (cle vers dim_airport).
+      - name: distance_km
+        description: Distance orthodromique appareil / aeroport, en kilometres.

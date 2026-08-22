@@ -7,10 +7,14 @@
 /*
     Dimension aeronef. Grain : une adresse OACI 24 bits (= un appareil).
 
-    Construite par agregation des faits plutot que depuis un referentiel
-    externe : OpenSky ne publie pas de base immatriculations exploitable
-    librement, mais l'observation repetee suffit a caracteriser un
-    appareil (pays d'enregistrement, indicatifs utilises, plafond atteint).
+    Deux origines combinees :
+      * l'observation repetee (pays d'enregistrement, indicatifs, plafond) ;
+      * l'enrichissement par la base aeronefs OpenSky (type reel, constructeur,
+        modele, operateur) et par le referentiel compagnies OpenFlights
+        (nom de la compagnie deduite du prefixe d'indicatif).
+
+    C'est ce qui permet les analyses "part de marche des compagnies" et
+    "Airbus vs Boeing par pays".
 */
 
 with positions as (
@@ -66,6 +70,18 @@ callsign_usage as (
 
 ),
 
+metadata as (
+
+    select * from {{ ref('stg_opensky__aircraft') }}
+
+),
+
+airlines as (
+
+    select * from {{ ref('dim_airline') }}
+
+),
+
 final as (
 
     select
@@ -73,11 +89,42 @@ final as (
         callsign_usage.callsign                                     as most_frequent_callsign,
         date_diff(
             'second', aggregated.first_seen_at, aggregated.last_seen_at
-        )                                                           as observed_span_seconds
+        )                                                           as observed_span_seconds,
+
+        -- enrichissement base aeronefs (peut etre nul si appareil inconnu)
+        metadata.registration,
+        metadata.aircraft_type,
+        metadata.manufacturer,
+        metadata.model,
+        metadata.operator,
+        metadata.built_year,
+
+        -- constructeur regroupe : discrimine les deux grands avionneurs du
+        -- reste, pour l'analyse "Airbus vs Boeing".
+        case
+            when metadata.manufacturer ilike '%airbus%'  then 'Airbus'
+            when metadata.manufacturer ilike '%boeing%'  then 'Boeing'
+            when metadata.manufacturer ilike '%embraer%' then 'Embraer'
+            when metadata.manufacturer ilike '%bombardier%'
+              or metadata.manufacturer ilike '%canadair%' then 'Bombardier'
+            when metadata.manufacturer ilike '%atr%'     then 'ATR'
+            when metadata.manufacturer is null           then 'Inconnu'
+            else 'Autre'
+        end                                                         as manufacturer_group,
+
+        -- compagnie deduite du prefixe (3 lettres) de l'indicatif le plus
+        -- frequent : c'est le code OACI de la compagnie.
+        upper(left(callsign_usage.callsign, 3))                     as airline_icao,
+        airlines.airline_name,
+        airlines.country                                            as airline_country
 
     from aggregated
     left join callsign_usage
         on aggregated.aircraft_icao24 = callsign_usage.aircraft_icao24
+    left join metadata
+        on aggregated.aircraft_icao24 = metadata.aircraft_icao24
+    left join airlines
+        on upper(left(callsign_usage.callsign, 3)) = airlines.airline_icao
 
 )
 

@@ -32,3 +32,23 @@ skytrace:
       threads: 4
       settings:
         TimeZone: "UTC"
+
+    # Cible R2 : le lac brut est lu en s3:// (Cloudflare R2). L'entrepot
+    # DuckDB reste local. Les identifiants viennent de l'environnement ;
+    # aucun secret n'est ecrit ici. Selectionnee par `skytrace` quand des
+    # identifiants R2 sont presents.
+    r2:
+      type: duckdb
+      path: "{{ env_var('SKYTRACE_DUCKDB_PATH') }}"
+      schema: main
+      threads: 4
+      extensions:
+        - httpfs
+      settings:
+        TimeZone: "UTC"
+        s3_region: "auto"
+        s3_url_style: "path"
+        s3_use_ssl: true
+        s3_endpoint: "{{ env_var('SKYTRACE_R2_ENDPOINT', '') }}"
+        s3_access_key_id: "{{ env_var('SKYTRACE_R2_ACCESS_KEY_ID', '') }}"
+        s3_secret_access_key: "{{ env_var('SKYTRACE_R2_SECRET_ACCESS_KEY', '') }}"

@@ -45,6 +45,7 @@ flowchart LR
         A["OpenSky Network<br/>API REST / OAuth2"]
         B["OurAirports<br/>CSV"]
         B2["Open-Meteo<br/>qualité de l'air"]
+        B3["OpenSky aircraft DB<br/>+ OpenFlights"]
     end
 
     subgraph bronze["Bronze - lac de données"]
@@ -59,8 +60,9 @@ flowchart LR
     subgraph gold["Gold - marts dbt"]
         F["fct_aircraft_positions<br/><i>incrémental</i>"]
         G["fct_traffic_hourly<br/>fct_airport_activity"]
-        H["dim_aircraft<br/>dim_airport"]
+        H["dim_aircraft<br/>dim_airport<br/>dim_airline"]
         K["fct_airport_hourly_air_quality<br/><i>trafic x pollution</i>"]
+        L["fct_airline_airport_activity<br/><i>compagnies par aéroport</i>"]
     end
 
     I["Streamlit"]
@@ -68,13 +70,16 @@ flowchart LR
     A --> C
     B --> C
     B2 --> C
+    B3 --> C
     C --> D --> E --> F --> G
     D --> H
     F --> H
+    E --> L
     G --> K
     G --> I
     H --> I
     K --> I
+    L --> I
 
     J["Dagster<br/>ordonnancement + lignée + contrôles"] -.pilote.-> C
     J -.pilote.-> D
@@ -90,6 +95,9 @@ flowchart LR
   le tableau de bord a le droit de lire.
 
 ## Démarrage rapide
+
+> Guide complet (installer, lancer, voir les données sous toutes leurs
+> formes) : [`docs/guide-lancement.md`](docs/guide-lancement.md).
 
 ### 1. Installation
 
@@ -215,6 +223,27 @@ descriptive, et l'hypothèse naïve est explicitement rejetée par les données.
 
 Analyse reproductible (`python scripts/analyse_qualite_air.py`), rapport
 détaillé et figure : [`docs/analyse_trafic_qualite_air.md`](docs/analyse_trafic_qualite_air.md).
+
+## Enrichissement flotte : compagnies et constructeurs
+
+Une troisième source croise deux référentiels gratuits pour donner du sens
+aux appareils observés :
+
+- **Base aéronefs OpenSky** (~500 000 appareils) : type réel, constructeur,
+  modèle et opérateur par adresse OACI 24 bits.
+- **OpenFlights** : le préfixe de l'indicatif (AFR, BAW, DLH…) identifie la
+  compagnie.
+
+`dim_aircraft` n'est plus seulement dérivée de l'observation : elle porte le
+constructeur et la compagnie. Cela débloque des analyses lisibles :
+
+- **Part de marché des compagnies par aéroport** (`fct_airline_airport_activity`) :
+  à Paris-CDG, Air France domine devant TNT, FedEx et Delta.
+- **Airbus vs Boeing** sur l'ensemble des appareils vus : répartition à peu
+  près équilibrée (~34 % / ~35 %), le reste en Embraer, Bombardier, ATR.
+
+Le tableau de bord expose les deux (sélecteur d'aéroport + camembert
+constructeurs).
 
 ## Qualité des données
 
@@ -344,5 +373,11 @@ Elles sont assumées et documentées plutôt que masquées :
   ([conditions](https://opensky-network.org/about/terms-of-use))
 - [OurAirports](https://ourairports.com/data/) - référentiel aéroports,
   domaine public
+- [Open-Meteo](https://open-meteo.com/) - qualité de l'air, usage non
+  commercial gratuit
+- [OpenSky aircraft database](https://opensky-network.org/aircraft-database) -
+  métadonnées aéronefs, usage non commercial et recherche
+- [OpenFlights](https://openflights.org/data.html) - référentiel compagnies,
+  Open Database License
 
 Code sous licence MIT.

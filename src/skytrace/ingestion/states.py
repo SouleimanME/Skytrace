@@ -25,6 +25,7 @@ from skytrace.config import Settings, get_settings
 from skytrace.logging_conf import get_logger
 from skytrace.opensky.client import OpenSkyClient, StatesSnapshot
 from skytrace.opensky.schema import states_to_arrow
+from skytrace.storage import write_parquet
 
 logger = get_logger(__name__)
 
@@ -33,34 +34,39 @@ logger = get_logger(__name__)
 class IngestedSnapshot:
     """Resultat d'une ingestion, retourne a l'ordonnanceur."""
 
-    path: Path
+    uri: str
     rows: int
     snapshot_ts: int
     region: str
     credits_spent: int
+    size_bytes: int = 0
+
+    @property
+    def path(self) -> Path:
+        """Chemin local (mode disque). Sur R2, `uri` est un s3://..."""
+        return Path(self.uri)
 
     @property
     def snapshot_at(self) -> datetime:
         return datetime.fromtimestamp(self.snapshot_ts, tz=UTC)
 
-    @property
-    def size_bytes(self) -> int:
-        return self.path.stat().st_size if self.path.exists() else 0
 
-
-def partition_path(root: Path, snapshot_ts: int) -> Path:
-    """Chemin du fichier Parquet pour un horodatage donne."""
+def partition_key(snapshot_ts: int) -> str:
+    """Cle relative (dans le lac) du fichier Parquet d'un snapshot."""
     moment = datetime.fromtimestamp(snapshot_ts, tz=UTC)
     return (
-        root
-        / f"ingest_date={moment:%Y-%m-%d}"
-        / f"ingest_hour={moment:%H}"
-        / f"states_{snapshot_ts}.parquet"
+        f"opensky_states/ingest_date={moment:%Y-%m-%d}"
+        f"/ingest_hour={moment:%H}/states_{snapshot_ts}.parquet"
     )
 
 
+def partition_path(root: Path, snapshot_ts: int) -> Path:
+    """Chemin local du fichier Parquet pour un horodatage donne."""
+    return root / partition_key(snapshot_ts).removeprefix("opensky_states/")
+
+
 def write_snapshot(snapshot: StatesSnapshot, root: Path) -> IngestedSnapshot:
-    """Serialise un snapshot en Parquet et renvoie ses metadonnees."""
+    """Serialise un snapshot en Parquet LOCAL (helper de test)."""
     table = states_to_arrow(
         snapshot.vectors,
         snapshot_ts=snapshot.snapshot_ts,
@@ -68,20 +74,14 @@ def write_snapshot(snapshot: StatesSnapshot, root: Path) -> IngestedSnapshot:
     )
     destination = partition_path(root, snapshot.snapshot_ts)
     destination.parent.mkdir(parents=True, exist_ok=True)
-
     pq.write_table(table, destination, compression="zstd")
-    logger.info(
-        "Ecrit %d lignes -> %s (%.1f Ko)",
-        table.num_rows,
-        destination,
-        destination.stat().st_size / 1024,
-    )
     return IngestedSnapshot(
-        path=destination,
+        uri=str(destination),
         rows=table.num_rows,
         snapshot_ts=snapshot.snapshot_ts,
         region=snapshot.region,
         credits_spent=snapshot.credits_spent,
+        size_bytes=destination.stat().st_size,
     )
 
 
@@ -104,8 +104,19 @@ def ingest_states(
 
     if not snapshot.vectors:
         logger.warning(
-            "Aucun aeronef renvoye pour la zone %s : snapshot vide, rien n'est ecrit sur disque.",
+            "Aucun aeronef renvoye pour la zone %s : snapshot vide.",
             snapshot.region,
         )
 
-    return write_snapshot(snapshot, settings.states_dir)
+    table = states_to_arrow(
+        snapshot.vectors, snapshot_ts=snapshot.snapshot_ts, region=snapshot.region
+    )
+    result = write_parquet(partition_key(snapshot.snapshot_ts), table, settings)
+    return IngestedSnapshot(
+        uri=result.uri,
+        rows=table.num_rows,
+        snapshot_ts=snapshot.snapshot_ts,
+        region=snapshot.region,
+        credits_spent=snapshot.credits_spent,
+        size_bytes=result.size_bytes,
+    )

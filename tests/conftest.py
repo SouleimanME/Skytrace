@@ -9,7 +9,22 @@ from __future__ import annotations
 
 import pytest
 
-from skytrace.config import Settings
+from skytrace.config import Settings, get_settings
+
+
+@pytest.fixture(autouse=True)
+def _isolate_from_dotenv(monkeypatch):
+    """Empeche les tests de lire le `.env` du developpeur.
+
+    pydantic-settings complete les champs non fournis depuis `.env`. Sans cette
+    isolation, des identifiants R2 locaux feraient ecrire les tests sur le vrai
+    bucket (et ecraseraient les donnees de production). On desactive donc le
+    chargement du `.env` pour toute la suite.
+    """
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
 
 
 @pytest.fixture

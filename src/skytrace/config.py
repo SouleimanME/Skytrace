@@ -89,6 +89,10 @@ class Settings(BaseSettings):
 
     region: str = Field(default="france", alias="SKYTRACE_REGION")
     daily_credit_budget: int = Field(default=400, alias="SKYTRACE_DAILY_CREDIT_BUDGET")
+    # Retention du lac : les snapshots plus vieux sont purges pour borner le
+    # stockage (rester sous les 10 Go gratuits de R2). 180 j = ~6 mois
+    # d'historique, largement sous le palier gratuit meme en zone monde.
+    retention_days: int = Field(default=180, alias="SKYTRACE_RETENTION_DAYS")
     request_timeout: float = Field(default=30.0, alias="SKYTRACE_REQUEST_TIMEOUT")
     max_retries: int = Field(default=4, alias="SKYTRACE_MAX_RETRIES")
     # Multiplicateur de l'attente exponentielle entre deux tentatives.

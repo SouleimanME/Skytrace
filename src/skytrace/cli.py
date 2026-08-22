@@ -253,6 +253,15 @@ def cmd_pipeline(args: argparse.Namespace) -> int:
     # evite donc de le refaire a chaque cycle.
     _maybe_refresh_fleet(get_settings())
 
+    # Retention : borne le stockage (rester sous le palier gratuit R2).
+    from skytrace.storage import prune_old_states
+
+    settings = get_settings()
+    try:
+        prune_old_states(settings.retention_days, settings)
+    except Exception as exc:  # noqa: BLE001 - la purge ne doit pas casser la collecte
+        logger.warning("Retention ignoree : %s", exc)
+
     build_args = argparse.Namespace(dbt_args=["build"])
     return cmd_dbt(build_args)
 

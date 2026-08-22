@@ -99,6 +99,59 @@ def object_age_seconds(key: str, settings: Settings | None = None) -> float | No
     return time.time() - local.stat().st_mtime
 
 
+def _date_from_key(path: str):
+    """Extrait la date de partition (ingest_date=YYYY-MM-DD) d'un chemin."""
+    import re
+    from datetime import date
+
+    match = re.search(r"ingest_date=(\d{4})-(\d{2})-(\d{2})", path)
+    if not match:
+        return None
+    return date(int(match[1]), int(match[2]), int(match[3]))
+
+
+def prune_old_states(keep_days: int, settings: Settings | None = None) -> int:
+    """Supprime les snapshots de trafic plus vieux que `keep_days` jours.
+
+    Borne le stockage pour rester sous le palier gratuit R2. Ne touche qu'aux
+    positions (le gros du volume) ; les referentiels sont petits et rafraichis
+    par ecrasement. Renvoie le nombre de fichiers supprimes.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    settings = settings or get_settings()
+    if keep_days <= 0:
+        return 0
+    cutoff = (datetime.now(UTC) - timedelta(days=keep_days)).date()
+    deleted = 0
+
+    if settings.uses_r2:
+        from pyarrow.fs import FileSelector
+
+        fs = _s3_filesystem(settings)
+        base = f"{settings.r2_bucket}/raw/opensky_states"
+        try:
+            infos = fs.get_file_info(FileSelector(base, recursive=True))
+        except OSError:
+            return 0
+        for info in infos:
+            date_part = _date_from_key(info.path)
+            if info.path.endswith(".parquet") and date_part and date_part < cutoff:
+                fs.delete_file(info.path)
+                deleted += 1
+    else:
+        base = settings.raw_dir / "opensky_states"
+        for parquet in base.rglob("*.parquet"):
+            date_part = _date_from_key(str(parquet))
+            if date_part and date_part < cutoff:
+                parquet.unlink()
+                deleted += 1
+
+    if deleted:
+        logger.info("Retention : %d snapshots de plus de %d j supprimes", deleted, keep_days)
+    return deleted
+
+
 def check_connectivity(settings: Settings | None = None) -> str:
     """Valide l'acces au lac : ecrit puis relit un petit objet temoin.
 

@@ -79,7 +79,7 @@ models:
         data_tests:
           - accepted_values:
               arguments:
-                values: ["large_airport", "medium_airport"]
+                values: ["large_airport", "medium_airport", "small_airport"]
       - name: latitude
         data_tests:
           - not_null

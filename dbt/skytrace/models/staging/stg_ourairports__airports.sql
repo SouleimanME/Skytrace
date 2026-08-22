@@ -53,7 +53,10 @@ typed as (
 
 select *
 from typed
-where airport_type in ('large_airport', 'medium_airport')
+-- Tous les aeroports a voilure fixe (grands, moyens, petits). On ecarte les
+-- helisurfaces, hydrobases et terrains fermes : sans trafic ADS-B a voilure
+-- fixe, ils n'ajouteraient que du bruit au rapprochement spatial.
+where airport_type in ('large_airport', 'medium_airport', 'small_airport')
   and airport_id is not null
   and latitude is not null
   and longitude is not null

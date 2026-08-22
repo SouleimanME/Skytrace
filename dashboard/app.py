@@ -755,6 +755,30 @@ def _render_body() -> None:
                 "compagnie deduite du prefixe d'indicatif (OpenFlights)."
             )
 
+        # Top modeles d'avions (tous les types repertories dans la base).
+        models = load(
+            """
+            select aircraft_type, count(*) as aeronefs
+            from marts.dim_aircraft
+            where aircraft_type is not null
+            group by 1
+            order by 2 desc
+            limit 15
+            """
+        )
+        if not models.empty:
+            model_chart = px.bar(
+                models.sort_values("aeronefs"),
+                x="aeronefs",
+                y="aircraft_type",
+                orientation="h",
+                labels={"aeronefs": "Aeronefs distincts", "aircraft_type": ""},
+            )
+            model_chart.update_traces(marker={"color": "#b388ff", "opacity": 0.85})
+            style_fig(model_chart, height=420)
+            model_chart.update_layout(title="Modeles d'avions les plus vus")
+            st.plotly_chart(model_chart, use_container_width=True)
+
     # -- Deuxieme source : trafic et qualite de l'air ----------------------
     st.divider()
     st.subheader("Trafic et qualite de l'air")

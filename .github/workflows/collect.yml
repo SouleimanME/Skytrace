@@ -33,7 +33,10 @@ jobs:
   collect:
     runs-on: ubuntu-latest
     env:
-      SKYTRACE_REGION: europe
+      # Zone monde : couverture ADS-B mondiale (dense en Europe/Amerique du
+      # Nord, plus clairsemee ailleurs). 4 credits/appel, 48/jour = 192/400.
+      # Le stockage est borne par la retention (SKYTRACE_RETENTION_DAYS).
+      SKYTRACE_REGION: world
       # Entrepot DuckDB local au runner (ephemere) : sert au garde-fou dbt.
       SKYTRACE_DUCKDB_PATH: ${{ github.workspace }}/data/warehouse/skytrace.duckdb
       # Lac brut sur R2 (identifiants en secrets).

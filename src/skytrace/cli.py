@@ -5,6 +5,7 @@ de la meme maniere depuis un terminal, depuis Dagster ou depuis la CI.
 
     skytrace ingest-states       # un snapshot du trafic -> couche bronze
     skytrace ingest-airports     # rafraichit le referentiel aeroports
+    skytrace ingest-air-quality  # qualite de l'air autour des aeroports
     skytrace dbt build           # transforme + teste (dbt est appele ici)
     skytrace pipeline            # ingestion + transformation, en une fois
     skytrace dagster             # orchestrateur, avec etat persistant
@@ -51,6 +52,17 @@ def cmd_ingest_airports(_: argparse.Namespace) -> int:
 
     result = ingest_airports(get_settings())
     print(f"{result.rows} aeroports -> {result.path}")
+    return 0
+
+
+def cmd_ingest_air_quality(_: argparse.Namespace) -> int:
+    from skytrace.ingestion import ingest_air_quality
+
+    result = ingest_air_quality(get_settings())
+    print(
+        f"{result.rows} lignes | {result.airports} aeroports "
+        f"| {result.start_date} -> {result.end_date} -> {result.path}"
+    )
     return 0
 
 
@@ -201,8 +213,30 @@ def cmd_pipeline(args: argparse.Namespace) -> int:
         if (code := cmd_ingest_airports(args)) != 0:
             return code
 
+    # Qualite de l'air : dimension a evolution lente. On la rafraichit si elle
+    # est absente ou perimee (plus de 6 h), pas a chaque cycle de 15/30 min -
+    # les valeurs passees ne changent plus. Un echec ici n'interrompt pas le
+    # pipeline : la source air quality est secondaire.
+    _maybe_refresh_air_quality(get_settings())
+
     build_args = argparse.Namespace(dbt_args=["build"])
     return cmd_dbt(build_args)
+
+
+def _maybe_refresh_air_quality(settings, *, max_age_hours: float = 6.0) -> None:
+    import time
+
+    from skytrace.ingestion import ingest_air_quality
+
+    path = settings.air_quality_dir / "air_quality.parquet"
+    fresh = path.exists() and (time.time() - path.stat().st_mtime) < max_age_hours * 3600
+    if fresh:
+        return
+    try:
+        result = ingest_air_quality(settings)
+        logger.info("Qualite de l'air rafraichie : %d lignes", result.rows)
+    except Exception as exc:  # noqa: BLE001 - source secondaire, on n'interrompt pas
+        logger.warning("Rafraichissement qualite de l'air ignore : %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -232,6 +266,12 @@ def build_parser() -> argparse.ArgumentParser:
         "ingest-airports", help="Rafraichit le referentiel aeroports OurAirports."
     )
     airports.set_defaults(handler=cmd_ingest_airports)
+
+    air_quality = subparsers.add_parser(
+        "ingest-air-quality",
+        help="Rafraichit la qualite de l'air (Open-Meteo) autour des aeroports.",
+    )
+    air_quality.set_defaults(handler=cmd_ingest_air_quality)
 
     dbt = subparsers.add_parser(
         "dbt",

@@ -144,6 +144,10 @@ class Settings(BaseSettings):
         return self.raw_dir / "ourairports"
 
     @property
+    def air_quality_dir(self) -> Path:
+        return self.raw_dir / "open_meteo_air_quality"
+
+    @property
     def dbt_project_dir(self) -> Path:
         return PROJECT_ROOT / "dbt" / "skytrace"
 
@@ -157,7 +161,12 @@ class Settings(BaseSettings):
         return not (self.opensky_client_id and self.opensky_client_secret)
 
     def ensure_directories(self) -> None:
-        for path in (self.states_dir, self.airports_dir, self.resolved_duckdb_path.parent):
+        for path in (
+            self.states_dir,
+            self.airports_dir,
+            self.air_quality_dir,
+            self.resolved_duckdb_path.parent,
+        ):
             path.mkdir(parents=True, exist_ok=True)
 
     def dbt_env(self) -> dict[str, str]:

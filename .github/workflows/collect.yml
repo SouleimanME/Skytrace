@@ -65,7 +65,7 @@ jobs:
         run: |
           git config user.name  "skytrace-bot"
           git config user.email "actions@github.com"
-          git add -f data/raw/opensky_states data/raw/ourairports 2>/dev/null || true
+          git add -f data/raw/opensky_states data/raw/ourairports data/raw/open_meteo_air_quality 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "Aucune donnee nouvelle a publier."
           else

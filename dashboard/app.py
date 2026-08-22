@@ -34,7 +34,6 @@ SETTINGS = get_settings()
 
 st.set_page_config(
     page_title="SkyTrace - trafic aerien",
-    page_icon="✈",
     layout="wide",
 )
 
@@ -137,7 +136,7 @@ def ensure_warehouse_built() -> None:
 # ---------------------------------------------------------------------------
 # En-tete et commandes
 # ---------------------------------------------------------------------------
-st.title("✈ SkyTrace")
+st.title("SkyTrace")
 st.caption(
     "Trafic aerien observe via ADS-B (OpenSky Network) - "
     f"zone **{SETTINGS.region}**, donnees agregees par la couche `marts`."
@@ -187,7 +186,6 @@ if not ready:
         "En attente de la premiere collecte. Sur le deploiement public, le "
         "workflow *Collecte planifiee* remplit le lac dans les 30 minutes ; "
         "on peut aussi le declencher manuellement depuis l'onglet Actions.",
-        icon="⏳",
     )
     st.stop()
 
@@ -207,7 +205,7 @@ def render() -> None:
     except duckdb.IOException:
         # Un run dbt tient le verrou d'ecriture pendant une seconde ou deux.
         # C'est transitoire : on l'annonce au lieu d'afficher une trace.
-        st.info("Mise a jour de l'entrepot en cours, affichage dans un instant.", icon="⏳")
+        st.info("Mise a jour de l'entrepot en cours, affichage dans un instant.")
 
 
 def _render_body() -> None:
@@ -238,13 +236,11 @@ def _render_body() -> None:
         st.success(
             f"Donnees a jour - dernier releve il y a {age_minutes:.0f} min "
             f"({last_seen:%H:%M:%S} UTC).",
-            icon="🟢",
         )
     elif age_minutes <= SCHEDULE_MINUTES * 3:
         st.warning(
             f"Dernier releve il y a {age_minutes:.0f} min - un cycle de "
             f"collecte semble avoir ete manque.",
-            icon="🟠",
         )
     else:
         st.error(
@@ -252,7 +248,6 @@ def _render_body() -> None:
             "Le planning `traffic_every_15_minutes` est probablement inactif : "
             "l'activer dans l'onglet Automation de Dagster, sans quoi la serie "
             "temporelle ne se remplira pas.",
-            icon="🔴",
         )
 
     # -- Indicateurs cles --------------------------------------------------
@@ -288,7 +283,6 @@ def _render_body() -> None:
         st.info(
             "Un seul releve pour l'instant. La courbe apparait des le "
             f"deuxieme, soit environ {SCHEDULE_MINUTES} min apres le premier.",
-            icon="⏳",
         )
     else:
         series = px.line(
@@ -405,7 +399,6 @@ def _render_body() -> None:
         st.info(
             "L'agregat horaire demande au moins deux heures de collecte. "
             "En attendant, la courbe releve par releve ci-dessus fait le travail.",
-            icon="⏳",
         )
     else:
         trend = px.area(
@@ -474,13 +467,84 @@ def _render_body() -> None:
             "de montee : ADS-B ne publie pas de plan de vol."
         )
 
+    # -- Deuxieme source : trafic et qualite de l'air ----------------------
+    st.divider()
+    st.subheader("Trafic et qualite de l'air")
+
+    air_quality = load(
+        """
+        with panel as (
+            select
+                distinct_aircraft,
+                no2_ugm3,
+                distinct_aircraft
+                    - avg(distinct_aircraft) over (partition by airport_id) as ac_within,
+                no2_ugm3
+                    - avg(no2_ugm3) over (partition by airport_id) as no2_within
+            from marts.fct_airport_hourly_air_quality
+            where no2_ugm3 is not null
+        )
+        select
+            count(*)                          as n,
+            corr(distinct_aircraft, no2_ugm3) as r_naive,
+            corr(ac_within, no2_within)       as r_within
+        from panel
+        """
+    ).iloc[0]
+
+    if not air_quality["n"] or air_quality["n"] < 10:
+        st.info(
+            "Pas encore assez de donnees croisees trafic / qualite de l'air. "
+            "La deuxieme source (Open-Meteo) se remplit avec le pipeline.",
+        )
+    else:
+        left, right = st.columns([1, 2])
+        with left:
+            st.metric("Corr. brute avions ~ NO2", f"{air_quality['r_naive']:+.2f}")
+            st.metric(
+                "Corr. intra-aeroport",
+                f"{air_quality['r_within']:+.2f}",
+                help=(
+                    "Apres retrait de la moyenne de chaque aeroport. La "
+                    "correlation brute, positive, s'inverse : le lien n'est "
+                    "qu'un artefact 'entre aeroports'."
+                ),
+            )
+            st.caption(
+                "A l'echelle horaire, le trafic aerien n'est pas un predicteur "
+                "detectable du NO2 au sol. Analyse complete dans "
+                "`docs/analyse_trafic_qualite_air.md`."
+            )
+        with right:
+            panel = load(
+                """
+                select distinct_aircraft, no2_ugm3, airport_iata_code
+                from marts.fct_airport_hourly_air_quality
+                where no2_ugm3 is not null
+                """
+            )
+            scatter = px.scatter(
+                panel,
+                x="distinct_aircraft",
+                y="no2_ugm3",
+                color="airport_iata_code",
+                labels={
+                    "distinct_aircraft": "Avions distincts par heure",
+                    "no2_ugm3": "NO2 au sol (ug/m3)",
+                    "airport_iata_code": "Aeroport",
+                },
+                height=360,
+            )
+            scatter.update_layout(margin={"l": 0, "r": 0, "t": 10, "b": 0})
+            st.plotly_chart(scatter, use_container_width=True)
+
     # -- Pied de page ------------------------------------------------------
     st.divider()
     st.caption(
         f"Dernier releve : **{last_seen:%Y-%m-%d %H:%M:%S} UTC** | "
         f"Page rafraichie a {datetime.now(UTC):%H:%M:%S} UTC | "
         f"Entrepot : `{SETTINGS.resolved_duckdb_path.name}` | "
-        "Source : OpenSky Network + OurAirports"
+        "Sources : OpenSky Network + OurAirports + Open-Meteo"
     )
 
 

@@ -29,16 +29,21 @@ models:
                 values: ["sol", "montee", "descente", "croisiere", "inconnu"]
       - name: barometric_altitude_ft
         data_tests:
+          # Plausibilite de capteur -> warn (voir stg_opensky__states).
           - accepted_range:
               arguments:
                 min_value: -1650
                 max_value: 66000
+              config:
+                severity: warn
       - name: ground_speed_kt
         data_tests:
           - accepted_range:
               arguments:
                 min_value: 0
                 max_value: 780
+              config:
+                severity: warn
       - name: position_age_seconds
         description: >
           Age de la derniere position connue au moment du releve. Une
@@ -164,3 +169,33 @@ models:
               arguments:
                 min_value: -180
                 max_value: 180
+
+  - name: fct_airport_hourly_air_quality
+    description: >
+      Panel horaire trafic x qualite de l'air (aeroport, heure). Support de
+      l'analyse trafic / pollution. Jointure interne : uniquement les
+      aeroports suivis en qualite de l'air.
+    columns:
+      - name: airport_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_airport')
+                field: airport_id
+      - name: activity_hour
+        data_tests:
+          - not_null
+      - name: hour_of_day
+        data_tests:
+          - not_null
+          - accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 23
+      - name: distinct_aircraft
+        data_tests:
+          - not_null
+          - accepted_range:
+              arguments:
+                min_value: 1

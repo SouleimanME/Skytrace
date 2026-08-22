@@ -35,16 +35,25 @@ models:
           tolere -500 m et plafonne au-dessus du plafond operationnel de
           l'aviation civile.
         data_tests:
+          # Plausibilite de capteur, pas invariant structurel : le flux ADS-B
+          # contient un bruit occasionnel (transpondeur defaillant). On
+          # signale sans bloquer le pipeline (severity: warn) - halter une
+          # collecte pour 2 releves aberrants sur des dizaines de milliers
+          # serait disproportionne. Les invariants durs restent en error.
           - accepted_range:
               arguments:
                 min_value: -500
                 max_value: 20000
+              config:
+                severity: warn
       - name: ground_speed_ms
         data_tests:
           - accepted_range:
               arguments:
                 min_value: 0
                 max_value: 400
+              config:
+                severity: warn
       - name: heading_deg
         data_tests:
           - accepted_range:
@@ -85,3 +94,33 @@ models:
               arguments:
                 min_value: -180
                 max_value: 180
+
+  - name: stg_open_meteo__air_quality
+    description: >
+      Qualite de l'air horaire par aeroport, typee. Cle : (airport_icao,
+      measured_hour).
+    columns:
+      - name: airport_icao
+        data_tests:
+          - not_null
+      - name: measured_hour
+        data_tests:
+          - not_null
+      - name: no2_ugm3
+        description: Concentration de NO2 en microgrammes/m3.
+        data_tests:
+          # Plausibilite de mesure -> warn (voir philosophie stg_opensky).
+          - accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1000
+              config:
+                severity: warn
+      - name: pm25_ugm3
+        data_tests:
+          - accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1000
+              config:
+                severity: warn

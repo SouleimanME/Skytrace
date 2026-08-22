@@ -46,3 +46,21 @@ sources:
             description: Code identifiant de l'aerodrome (souvent OACI).
           - name: type
             description: Categorie (large_airport, medium_airport, heliport...).
+
+      - name: open_meteo_air_quality
+        description: >
+          Qualite de l'air horaire (NO2, PM2.5, PM10, ozone) mesuree aux
+          coordonnees des grands aeroports suivis (Open-Meteo). Deuxieme
+          source, support de l'analyse trafic / pollution.
+        loaded_at_field: ingested_at
+        freshness:
+          warn_after: { count: 36, period: hour }
+          error_after: { count: 96, period: hour }
+        meta:
+          external_location: >-
+            read_parquet('{{ env_var("SKYTRACE_DATA_DIR") }}/raw/open_meteo_air_quality/air_quality.parquet')
+        columns:
+          - name: airport_icao
+            description: Code OACI de l'aeroport - cle de jointure avec dim_airport.
+          - name: measured_at
+            description: Heure de la mesure (UTC).

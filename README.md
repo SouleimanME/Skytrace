@@ -1,4 +1,4 @@
-# ✈ SkyTrace
+# SkyTrace
 
 **Pipeline de données end-to-end sur le trafic aérien européen.**
 Collecte les positions ADS-B de tous les avions en vol toutes les 15 minutes,
@@ -17,7 +17,7 @@ Une fois le dépôt public créé, coller les badges ci-dessous (remplacer
 [![CI](https://github.com/<compte>/skytrace/actions/workflows/ci.yml/badge.svg)](https://github.com/<compte>/skytrace/actions/workflows/ci.yml)
 [![Collecte](https://github.com/<compte>/skytrace/actions/workflows/collect.yml/badge.svg)](https://github.com/<compte>/skytrace/actions/workflows/collect.yml)
 
-🔗 **Démo en ligne** : https://<compte>-skytrace.streamlit.app
+**Démo en ligne** : https://<compte>-skytrace.streamlit.app
 -->
 
 ## Pourquoi ce projet
@@ -44,6 +44,7 @@ flowchart LR
     subgraph sources["Sources"]
         A["OpenSky Network<br/>API REST / OAuth2"]
         B["OurAirports<br/>CSV"]
+        B2["Open-Meteo<br/>qualité de l'air"]
     end
 
     subgraph bronze["Bronze - lac de données"]
@@ -59,17 +60,21 @@ flowchart LR
         F["fct_aircraft_positions<br/><i>incrémental</i>"]
         G["fct_traffic_hourly<br/>fct_airport_activity"]
         H["dim_aircraft<br/>dim_airport"]
+        K["fct_airport_hourly_air_quality<br/><i>trafic x pollution</i>"]
     end
 
     I["Streamlit"]
 
     A --> C
     B --> C
+    B2 --> C
     C --> D --> E --> F --> G
     D --> H
     F --> H
+    G --> K
     G --> I
     H --> I
+    K --> I
 
     J["Dagster<br/>ordonnancement + lignée + contrôles"] -.pilote.-> C
     J -.pilote.-> D
@@ -184,6 +189,32 @@ différents et deux dimensions conformes.
   s'applique qu'aux couples survivants et à leurs 8 cellules voisines.
 - `distinct_aircraft` est documenté comme **mesure non additive** - sommer
   24 heures ne donne pas le total journalier.
+
+## Question analytique : le trafic se lit-il dans le NO2 ?
+
+Une deuxième source, **Open-Meteo Air Quality** (gratuite, sans clé), fournit
+les concentrations horaires de polluants au sol aux coordonnées des grands
+aéroports. Jointe au trafic dans le mart `fct_airport_hourly_air_quality`,
+elle sert une vraie question chiffrée : *plus il y a d'avions autour d'un
+aéroport à une heure donnée, plus le NO2 mesuré au sol est-il élevé ?*
+
+La réponse, en contrôlant progressivement les facteurs de confusion :
+
+| Niveau de contrôle | Corrélation avions ~ NO2 |
+|---|---|
+| Brute (toutes observations) | **+0.15** |
+| Intra-aéroport (retrait de l'effet aéroport) | **-0.23** |
+| Intra-aéroport et dé-saisonnalisée (retrait du cycle jour/nuit) | **-0.16** |
+
+La corrélation positive naïve **s'inverse** une fois retiré l'effet « entre
+aéroports » (les gros hubs sont dans des métropoles au NO2 de fond plus
+élevé). **Conclusion : à l'échelle horaire, le trafic aérien n'est pas un
+prédicteur détectable du NO2 au sol** - dominé par le trafic routier, le
+chauffage et la météo. Le résultat est présenté comme une corrélation
+descriptive, et l'hypothèse naïve est explicitement rejetée par les données.
+
+Analyse reproductible (`python scripts/analyse_qualite_air.py`), rapport
+détaillé et figure : [`docs/analyse_trafic_qualite_air.md`](docs/analyse_trafic_qualite_air.md).
 
 ## Qualité des données
 

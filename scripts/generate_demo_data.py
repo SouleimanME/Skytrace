@@ -183,6 +183,50 @@ def build_state_vector(rng: random.Random, index: int, snapshot_ts: int) -> list
     ]
 
 
+def write_air_quality(settings, now, hours: int, rng: random.Random) -> int:
+    """Ecrit une qualite de l'air synthetique pour les aeroports de demo.
+
+    Valeurs horaires plausibles avec un cycle jour/nuit (le NO2 monte en
+    journee), volontairement peu correlees au trafic : l'analyse retrouve
+    ainsi, sur donnees synthetiques comme sur donnees reelles, l'absence de
+    lien horaire net.
+    """
+    import math
+
+    from skytrace.ingestion.air_quality import AIR_QUALITY_SCHEMA
+
+    ingested_at = datetime.now(UTC)
+    rows = []
+    for ident, _name, iata, lat, lon, *_ in AIRPORTS:
+        for step in range(hours + 1):
+            moment = now - timedelta(hours=step)
+            # Cycle diurne : creux la nuit, pic en milieu de journee.
+            diurnal = math.sin((moment.hour / 24.0) * 2 * math.pi - math.pi / 2)
+            no2 = max(1.0, 12 + 8 * diurnal + rng.uniform(-3, 3))
+            pm25 = max(1.0, 9 + 4 * diurnal + rng.uniform(-2, 2))
+            rows.append(
+                {
+                    "airport_icao": ident,
+                    "airport_iata": iata,
+                    "latitude": lat,
+                    "longitude": lon,
+                    "measured_at": moment,
+                    "nitrogen_dioxide": round(no2, 1),
+                    "pm2_5": round(pm25, 1),
+                    "pm10": round(pm25 * 1.4, 1),
+                    "ozone": round(45 + rng.uniform(-10, 10), 1),
+                    "ingested_at": ingested_at,
+                    "source": "demo/synthetic",
+                }
+            )
+
+    table = pa.Table.from_pylist(rows, schema=AIR_QUALITY_SCHEMA)
+    destination = settings.air_quality_dir / "air_quality.parquet"
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(table, destination, compression="zstd")
+    return len(rows)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--hours", type=int, default=6, help="Profondeur d'historique simulee.")
@@ -223,7 +267,9 @@ def main() -> int:
         total_rows += table.num_rows
         total_files += 1
 
+    aq_rows = write_air_quality(settings, now, args.hours, rng)
     print(f"Trafic     : {total_files} snapshots, {total_rows} positions")
+    print(f"Qualite air: {aq_rows} lignes horaires")
     print(f"Lac        : {settings.resolved_data_dir}")
     print("\nEtape suivante : skytrace dbt build")
     return 0

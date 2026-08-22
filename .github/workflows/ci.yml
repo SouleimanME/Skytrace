@@ -61,10 +61,10 @@ jobs:
           cache: pip
 
       - name: Installation
-        run: pip install -e ".[transform]"
+        run: pip install -e ".[transform,analysis]"
 
       - name: Generation du lac de donnees synthetique
-        run: python scripts/generate_demo_data.py --hours 6 --per-hour 4 --aircraft 200
+        run: python scripts/generate_demo_data.py --hours 12 --per-hour 4 --aircraft 200
 
       - name: Verification de la coherence du projet dbt
         run: skytrace dbt parse
@@ -83,6 +83,11 @@ jobs:
 
       - name: Inventaire de l'entrepot
         run: skytrace info
+
+      - name: Analyse trafic / qualite de l'air
+        # Verifie que le script d'analyse s'execute de bout en bout et
+        # produit son rapport + sa figure (sur donnees synthetiques ici).
+        run: python scripts/analyse_qualite_air.py
 
       - name: Publication de la documentation dbt
         run: skytrace dbt docs generate

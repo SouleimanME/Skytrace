@@ -748,7 +748,11 @@ def _render_body() -> None:
                 marker={"line": {"color": "#04070e", "width": 2}},
             )
             style_fig(donut, height=360)
-            donut.update_layout(showlegend=False, title="Constructeurs (Airbus vs Boeing...)")
+            donut.update_layout(
+                showlegend=False,
+                title={"text": "Constructeurs (Airbus vs Boeing...)", "y": 0.97},
+                margin={"l": 8, "r": 8, "t": 46, "b": 6},
+            )
             st.plotly_chart(donut, use_container_width=True)
             st.caption(
                 "Type et constructeur issus de la base aeronefs OpenSky ; "
@@ -758,25 +762,42 @@ def _render_body() -> None:
         # Top modeles d'avions (tous les types repertories dans la base).
         models = load(
             """
-            select aircraft_type, count(*) as aeronefs
+            select
+                aircraft_type,
+                any_value(manufacturer) as manufacturer,
+                count(*)                as aeronefs
             from marts.dim_aircraft
             where aircraft_type is not null
-            group by 1
-            order by 2 desc
+            group by aircraft_type
+            order by aeronefs desc
             limit 15
             """
         )
         if not models.empty:
+            # Etiquette lisible : "Boeing B738" plutot que le code seul.
+            models["label"] = [
+                f"{m} {t}" if m else t
+                for m, t in zip(models["manufacturer"], models["aircraft_type"], strict=False)
+            ]
             model_chart = px.bar(
                 models.sort_values("aeronefs"),
                 x="aeronefs",
-                y="aircraft_type",
+                y="label",
                 orientation="h",
-                labels={"aeronefs": "Aeronefs distincts", "aircraft_type": ""},
+                labels={"aeronefs": "Aeronefs distincts", "label": ""},
+                text="aeronefs",
             )
-            model_chart.update_traces(marker={"color": "#b388ff", "opacity": 0.85})
-            style_fig(model_chart, height=420)
-            model_chart.update_layout(title="Modeles d'avions les plus vus")
+            model_chart.update_traces(
+                marker={"color": "#b388ff", "opacity": 0.9},
+                textposition="outside",
+                textfont={"color": "#dbe7ff", "family": "Share Tech Mono, monospace"},
+                cliponaxis=False,
+            )
+            style_fig(model_chart, height=480)
+            model_chart.update_layout(
+                title={"text": "Modeles d'avions les plus vus", "y": 0.97},
+                margin={"l": 8, "r": 44, "t": 48, "b": 6},
+            )
             st.plotly_chart(model_chart, use_container_width=True)
 
     # -- Deuxieme source : trafic et qualite de l'air ----------------------

@@ -23,6 +23,7 @@ import html
 import math
 import os
 import sys
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -270,7 +271,90 @@ hr{ border:none; height:1px; background:linear-gradient(90deg,transparent,var(--
 /* Barre laterale : hierarchie plus nette, texte lisible. */
 [data-testid="stSidebar"] h2{ font-size:.82rem; letter-spacing:.16em; color:var(--cyan);}
 [data-testid="stSidebar"] [data-testid="stCaptionContainer"] p{ font-size:.75rem; color:var(--dim);}
+
+/* ------------------------------------------------------------------ */
+/* Petits ecrans                                                       */
+/*                                                                     */
+/* Streamlit fait passer chaque colonne en pleine largeur des que la   */
+/* place manque. Empilees telles quelles, les cinq cartes d'indicateurs*/
+/* occupaient a elles seules 470 pixels - plus de la moitie d'un ecran */
+/* de telephone avant d'avoir montre la moindre donnee. On les range   */
+/* donc par deux, on resserre les marges et on reduit la typographie   */
+/* d'affichage, dimensionnee pour un ecran large.                      */
+/* ------------------------------------------------------------------ */
+@media (max-width: 640px){
+
+  .block-container{ padding-top:.7rem; padding-left:.7rem; padding-right:.7rem; }
+
+  /* La grille de fond coute un repaint a chaque defilement pour un
+     effet invisible sur un ecran de cette taille. */
+  .stApp::before{ display:none; }
+
+  .hud{ padding:12px 14px; border-radius:12px; }
+  .hud-title{ font-size:1.6rem; letter-spacing:3px; }
+  .hud-sub{ font-size:.66rem; letter-spacing:.08em; }
+  .hud-badge{ font-size:.6rem; padding:4px 9px; }
+
+  h2{ font-size:.92rem; } h3{ font-size:.84rem; }
+
+  /* Deux indicateurs par ligne : `flex-basis` a 47 % laisse la place a
+     l'espacement, et `min-width` doit etre abaisse sinon Streamlit
+     impose sa propre largeur minimale et la ligne retombe a un. */
+  .st-key-indicateurs [data-testid="stColumn"]{
+    flex: 1 1 47% !important;
+    min-width: 47% !important;
+    width: 47% !important;
+  }
+  .st-key-indicateurs [data-testid="stMetricValue"]{ font-size:1.25rem !important; }
+  .st-key-indicateurs [data-testid="stMetricLabel"] p{ font-size:.62rem !important; }
+  .st-key-indicateurs [data-testid="stMetric"]{ padding:10px 12px !important; }
+
+  /* Les legendes sous les graphes sont des paragraphes d'explication :
+     lisibles au calme sur un grand ecran, envahissants ici. */
+  [data-testid="stCaptionContainer"] p{ font-size:.72rem; line-height:1.45; }
+
+  [data-testid="stMetricValue"]{ font-size:1.4rem !important; }
+
+  /* Le tableau des aeroports a six colonnes : il defile lateralement
+     dans son propre cadre plutot que d'etirer la page. */
+  [data-testid="stDataFrame"]{ overflow-x:auto; }
+
+  /* Les sections repliees sont des titres de section : elles doivent en
+     avoir l'allure, pas celle d'un widget Streamlit par defaut. */
+  [data-testid="stExpander"] summary p{
+    font-family:'Inter','Segoe UI',sans-serif; font-weight:600;
+    letter-spacing:.08em; text-transform:uppercase; font-size:.9rem;
+    color:#dff6fb;
+  }
+  [data-testid="stExpander"] details{
+    border:1px solid var(--line); border-radius:12px;
+    background:linear-gradient(120deg, rgba(0,229,255,0.05), rgba(43,107,255,0.03));
+  }
+  /* Un separateur AVANT chaque section repliee suffit a les detacher :
+     celui que Streamlit ajoute autour creait deux respirations. */
+  [data-testid="stExpander"] + hr, hr + [data-testid="stExpander"]{ margin-top:.4rem; }
+}
 """
+
+
+#: Fragments d'agent utilisateur des terminaux tenus en main.
+HANDHELD_HINTS = ("android", "iphone", "ipod", "ipad", "windows phone", "mobile")
+
+
+def is_handheld() -> bool:
+    """Vrai si la page est servie a un telephone ou une tablette.
+
+    La mise en forme se regle en CSS, mais deux choses ne s'y pretent pas :
+    le zoom initial de la carte et sa hauteur sont des valeurs passees a
+    deck.gl, pas des proprietes de style. L'agent utilisateur est une
+    approximation - il se falsifie et se trompe sur les cas limites - mais
+    l'erreur reste sans consequence : au pire, un cadrage un peu large.
+    """
+    try:
+        agent = (st.context.headers.get("User-Agent") or "").lower()
+    except Exception:  # noqa: BLE001 - hors contexte de requete
+        return False
+    return any(hint in agent for hint in HANDHELD_HINTS)
 
 
 def inject_theme() -> None:
@@ -354,6 +438,36 @@ ICON_NAME = "avion"
 AIRCRAFT_ICON_ATLAS, AIRCRAFT_ICON_MAPPING = aircraft_icon()
 
 
+@contextmanager
+def section(title: str, *, collapsible: bool = False, heading: bool = True):
+    """Section de page, repliable sur petit ecran.
+
+    Sur telephone, la page fait huit ecrans de haut : replier les sections
+    secondaires evite d'imposer un defilement interminable pour atteindre le
+    pied de page, sans rien retirer a personne - tout reste a une tape. Sur
+    grand ecran, la mise en page ne change pas.
+    """
+    st.divider()
+    if collapsible and is_handheld():
+        with st.expander(title, expanded=False):
+            yield
+    else:
+        if heading:
+            st.subheader(title)
+        yield
+
+
+def chart_config() -> dict:
+    """Options du rendu Plotly, adaptees au toucher.
+
+    La barre d'outils n'apparait qu'au survol sur un ecran de bureau, mais
+    reste affichee en permanence sur un ecran tactile, ou elle recouvre la
+    legende. Aucun de ses boutons - zoom, lasso, capture - n'a de sens au
+    doigt : on la retire.
+    """
+    return {"displayModeBar": not is_handheld(), "responsive": True}
+
+
 def style_fig(fig, height: int | None = None):
     """Applique le thème du tableau de bord à une figure Plotly.
 
@@ -397,7 +511,10 @@ def style_fig(fig, height: int | None = None):
         )
 
     if height:
-        fig.update_layout(height=height)
+        # Les hauteurs sont calibrees pour un ecran large. Sur telephone,
+        # les conserver telles quelles ferait de la page un couloir : chaque
+        # graphe occuperait la moitie de l'ecran, et il y en a huit.
+        fig.update_layout(height=int(height * 0.72) if is_handheld() else height)
     return fig
 
 
@@ -979,12 +1096,17 @@ def _render_body() -> None:
         )
 
     # -- Indicateurs clés --------------------------------------------------
-    columns = st.columns(5)
-    columns[0].metric("Positions", f"{int(overview['positions']):,}".replace(",", " "))
-    columns[1].metric("Aéronefs", f"{int(overview['aeronefs']):,}".replace(",", " "))
-    columns[2].metric("Snapshots", f"{int(overview['snapshots']):,}".replace(",", " "))
-    columns[3].metric("Aéroports", int(airports_active))
-    columns[4].metric("Historique", f"{span_hours:.1f} h")
+    # Le conteneur nomme produit une classe `st-key-indicateurs` : c'est le
+    # seul point d'accroche CSS fiable pour ne viser que ce bloc. Sur petit
+    # ecran, ses cinq colonnes se rangent par deux au lieu de s'empiler, ce
+    # qui rend 300 pixels de defilement.
+    with st.container(key="indicateurs"):
+        columns = st.columns(5)
+        columns[0].metric("Positions", f"{int(overview['positions']):,}".replace(",", " "))
+        columns[1].metric("Aéronefs", f"{int(overview['aeronefs']):,}".replace(",", " "))
+        columns[2].metric("Snapshots", f"{int(overview['snapshots']):,}".replace(",", " "))
+        columns[3].metric("Aéroports", int(airports_active))
+        columns[4].metric("Historique", f"{span_hours:.1f} h")
 
     st.divider()
 
@@ -1036,7 +1158,7 @@ def _render_body() -> None:
         # relevé survolé et en affiche les valeurs. Une barre en plus est
         # redondante, et Plotly la dessine large et opaque.
         series.update_xaxes(showspikes=False)
-        st.plotly_chart(series, width="stretch")
+        st.plotly_chart(series, width="stretch", config=chart_config())
         st.caption(
             f"{len(per_snapshot)} relevés. Chaque point est une exécution du "
             "pipeline : la granularité réelle de la collecte."
@@ -1118,10 +1240,19 @@ def _render_body() -> None:
 
             # Cadrage automatique sur la donnée réelle plutôt qu'un zoom fixe :
             # la même page reste lisible que la zone soit la France ou le monde.
+            #
+            # Le plancher de zoom dépend de la largeur disponible. Une tuile
+            # deck.gl fait 512 pixels : au zoom 1 le globe en occupe 1 024, ce
+            # qui tient sur un écran de bureau mais déborde très largement des
+            # 343 pixels d'un téléphone - on n'y voyait que les Amériques,
+            # l'Europe, pourtant la zone la plus dense, restait hors champ.
+            handheld = is_handheld()
             lat_span = plotted["latitude"].max() - plotted["latitude"].min()
             lon_span = plotted["longitude"].max() - plotted["longitude"].min()
             span = max(lat_span, lon_span / 1.8, 1.0)
-            zoom = max(1.0, min(6.5, 7.2 - math.log2(span)))
+            zoom_floor = -0.6 if handheld else 1.0
+            zoom = max(zoom_floor, min(6.5, 7.2 - math.log2(span)))
+            map_height = 400 if handheld else 560
 
             # Attention : pydeck transforme toute CHAÎNE de caractères en
             # accesseur de colonne. Passer `size_units="pixels"` produisait
@@ -1184,28 +1315,41 @@ def _render_body() -> None:
                     },
                 },
             )
-            # Tolérance de visee. Une silhouette fait neuf pixels : exiger le
-            # pixel exact rend le clic frustrant, surtout sur écran tactile ou
-            # au pave tactile. deck.gl cherche alors dans un rayon autour du
-            # curseur et retient l'appareil le plus proche.
-            deck.picking_radius = 8
+            # Tolérance de visée. Une silhouette fait neuf pixels : exiger le
+            # pixel exact rend la sélection frustrante. deck.gl cherche dans un
+            # rayon autour du point désigné et retient l'appareil le plus
+            # proche. Un doigt couvre une quarantaine de pixels contre deux ou
+            # trois pour un curseur : viser au pixel près y est impossible, le
+            # rayon est donc nettement plus large sur écran tactile.
+            deck.picking_radius = 20 if handheld else 8
 
             selection = st.pydeck_chart(
                 deck,
-                height=560,
+                height=map_height,
                 on_select="rerun",
                 selection_mode="single-object",
                 key=f"carte_{selection_scope(latest)}",
             )
-            st.caption(
-                f"{len(plotted):,} aéronefs du dernier relevé. ".replace(",", " ")
-                + "Cliquer sur un appareil affiche sa fiche. Chaque silhouette "
-                "est orientée selon le cap réel ; la couleur indique la phase "
-                "de vol. **Les zones vides ne sont pas des zones sans trafic** : "
-                "le réseau OpenSky repose sur des récepteurs bénévoles, denses "
-                "en Europe et en Amérique du Nord, rares ailleurs. Les volumes "
-                "ne sont pas comparables d'une région à l'autre."
+            compte = f"{len(plotted):,} aéronefs du dernier relevé. ".replace(",", " ")
+            biais = (
+                "**Les zones vides ne sont pas des zones sans trafic** : le "
+                "réseau OpenSky repose sur des récepteurs bénévoles, denses en "
+                "Europe et en Amérique du Nord, rares ailleurs. Les volumes ne "
+                "sont pas comparables d'une région à l'autre."
             )
+            if handheld:
+                # Six lignes de légende sous une carte de 400 pixels, c'est un
+                # mur de texte. On garde l'avertissement sur le biais - il
+                # conditionne la lecture de la carte, on ne peut pas le
+                # supprimer - et on renvoie le reste à la version large.
+                st.caption(compte + "Toucher un appareil affiche sa fiche.")
+                st.caption(biais)
+            else:
+                st.caption(
+                    compte + "Cliquer sur un appareil affiche sa fiche. Chaque "
+                    "silhouette est orientée selon le cap réel ; la couleur "
+                    "indique la phase de vol. " + biais
+                )
             render_aircraft_card(selection, latest)
 
     with phase_column:
@@ -1239,7 +1383,7 @@ def _render_body() -> None:
             )
             style_fig(donut, height=240)
             donut.update_layout(showlegend=False, margin={"l": 0, "r": 0, "t": 6, "b": 0})
-            st.plotly_chart(donut, width="stretch")
+            st.plotly_chart(donut, width="stretch", config=chart_config())
 
             st.metric(
                 "Altitude médiane",
@@ -1278,312 +1422,304 @@ def _render_body() -> None:
             fillcolor="rgba(0,229,255,0.14)",
         )
         style_fig(trend, height=300)
-        st.plotly_chart(trend, width="stretch")
+        st.plotly_chart(trend, width="stretch", config=chart_config())
         st.caption(
             "Agrégat issu de `fct_traffic_hourly`. C'est ici que le creux "
             "nocturne et le pic du matin deviennent visibles."
         )
 
-    st.divider()
+    with section("Pays et aéroports", collapsible=True, heading=False):
+        countries_column, airports_column = st.columns(2)
 
-    # -- Classements -------------------------------------------------------
-    countries_column, airports_column = st.columns(2)
-
-    with countries_column:
-        st.subheader("Pays d'immatriculation")
-        countries = load(
-            """
-            select origin_country, sum(position_count) as positions
-            from marts.fct_traffic_hourly
-            group by origin_country
-            order by positions desc
-            limit 12
-            """
-        )
-        selected_country = active_filters().get("origin_country")
-        chart = px.bar(
-            countries.sort_values("positions"),
-            x="positions",
-            y="origin_country",
-            orientation="h",
-            labels={"positions": "Positions", "origin_country": ""},
-        )
-        # La barre filtrée passe en vert : le filtre actif se repère d'un
-        # coup d'œil sur le graphe, sans lire le bandeau.
-        chart.update_traces(
-            marker={
-                "color": [
-                    "#34d399" if c == selected_country else "#22d3ee"
-                    for c in countries.sort_values("positions")["origin_country"]
-                ],
-                "opacity": 0.9,
-            }
-        )
-        style_fig(chart, height=420)
-        st.plotly_chart(chart, width="stretch")
-
-    with airports_column:
-        st.subheader("Aéroports les plus actifs")
-        airports = load(
-            """
-            select
-                airport_label                   as aeroport,
-                airport_municipality            as ville,
-                sum(distinct_aircraft)          as aeronefs,
-                sum(descending_aircraft)        as en_approche,
-                sum(climbing_aircraft)          as en_montee,
-                round(avg(avg_distance_km), 2)  as distance_moy_km
-            from marts.fct_airport_activity
-            group by airport_label, airport_municipality
-            order by aeronefs desc
-            limit 15
-            """
-        )
-        # Les en-tetes viennent des alias SQL : on les renomme pour
-        # l'affichage plutôt que d'accentuer la requête, dont les noms de
-        # colonnes servent aussi de clés côté Python.
-        st.dataframe(
-            airports.rename(
-                columns={
-                    "aeroport": "Aéroport",
-                    "ville": "Ville",
-                    "aeronefs": "Aéronefs",
-                    "en_approche": "En approche",
-                    "en_montee": "En montée",
-                    "distance_moy_km": "Distance moy. (km)",
-                }
-            ),
-            width="stretch",
-            hide_index=True,
-            height=420,
-        )
-        st.caption(
-            "Les colonnes *en approche* et *en montée* sont inférées du taux "
-            "de montée : ADS-B ne publie pas de plan de vol."
-        )
-
-    # -- Troisième source : compagnies et flotte ---------------------------
-    st.divider()
-    st.subheader("Compagnies et flotte")
-
-    airline_rows = load(
-        "select count(*) as n from marts.fct_airline_airport_activity "
-        "where airline_name is not null"
-    ).iloc[0]["n"]
-
-    if not airline_rows:
-        st.info(
-            "Pas encore de données compagnies. La troisième source (base "
-            "aéronefs OpenSky + compagnies OpenFlights) se remplit avec le pipeline.",
-        )
-    else:
-        fleet_left, fleet_right = st.columns(2)
-
-        with fleet_left:
-            top_airports = load(
+        with countries_column:
+            st.subheader("Pays d'immatriculation")
+            countries = load(
                 """
-                select airport_iata_code, airport_label, sum(distinct_aircraft) as n
-                from marts.fct_airline_airport_activity
-                where airline_name is not null and airport_iata_code is not null
-                group by 1, 2
-                order by n desc
+                select origin_country, sum(position_count) as positions
+                from marts.fct_traffic_hourly
+                group by origin_country
+                order by positions desc
                 limit 12
                 """
             )
-            labels = dict(
-                zip(
-                    top_airports["airport_iata_code"],
-                    top_airports["airport_label"],
-                    strict=False,
-                )
-            )
-            choice = st.selectbox(
-                "Part de marché des compagnies à l'aéroport",
-                options=list(labels.keys()),
-                format_func=lambda code: labels.get(code, code),
-            )
-            here = load(
-                "select airline_name, sum(distinct_aircraft) as aeronefs "
-                "from marts.fct_airline_airport_activity "
-                f"where airport_iata_code = '{choice}' and airline_name is not null "
-                "group by 1 order by 2 desc limit 10"
-            )
-            bar = px.bar(
-                here.sort_values("aeronefs"),
-                x="aeronefs",
-                y="airline_name",
+            selected_country = active_filters().get("origin_country")
+            chart = px.bar(
+                countries.sort_values("positions"),
+                x="positions",
+                y="origin_country",
                 orientation="h",
-                labels={"aeronefs": "Aéronefs distincts", "airline_name": ""},
+                labels={"positions": "Positions", "origin_country": ""},
             )
-            selected_airline = active_filters().get("airline_name")
-            bar.update_traces(
+            # La barre filtrée passe en vert : le filtre actif se repère d'un
+            # coup d'œil sur le graphe, sans lire le bandeau.
+            chart.update_traces(
                 marker={
                     "color": [
-                        "#22d3ee" if a == selected_airline else "#34d399"
-                        for a in here.sort_values("aeronefs")["airline_name"]
+                        "#34d399" if c == selected_country else "#22d3ee"
+                        for c in countries.sort_values("positions")["origin_country"]
                     ],
                     "opacity": 0.9,
                 }
             )
-            style_fig(bar, height=360)
-            st.plotly_chart(bar, width="stretch")
+            style_fig(chart, height=420)
+            st.plotly_chart(chart, width="stretch", config=chart_config())
 
-        with fleet_right:
-            makers = load(
+        with airports_column:
+            st.subheader("Aéroports les plus actifs")
+            airports = load(
                 """
-                select manufacturer_group, count(*) as aeronefs
+                select
+                    airport_label                   as aeroport,
+                    airport_municipality            as ville,
+                    sum(distinct_aircraft)          as aeronefs,
+                    sum(descending_aircraft)        as en_approche,
+                    sum(climbing_aircraft)          as en_montee,
+                    round(avg(avg_distance_km), 2)  as distance_moy_km
+                from marts.fct_airport_activity
+                group by airport_label, airport_municipality
+                order by aeronefs desc
+                limit 15
+                """
+            )
+            # Les en-tetes viennent des alias SQL : on les renomme pour
+            # l'affichage plutôt que d'accentuer la requête, dont les noms de
+            # colonnes servent aussi de clés côté Python.
+            st.dataframe(
+                airports.rename(
+                    columns={
+                        "aeroport": "Aéroport",
+                        "ville": "Ville",
+                        "aeronefs": "Aéronefs",
+                        "en_approche": "En approche",
+                        "en_montee": "En montée",
+                        "distance_moy_km": "Distance moy. (km)",
+                    }
+                ),
+                width="stretch",
+                hide_index=True,
+                height=420,
+            )
+            st.caption(
+                "Les colonnes *en approche* et *en montée* sont inférées du taux "
+                "de montée : ADS-B ne publie pas de plan de vol."
+            )
+
+    with section("Compagnies et flotte", collapsible=True):
+        airline_rows = load(
+            "select count(*) as n from marts.fct_airline_airport_activity "
+            "where airline_name is not null"
+        ).iloc[0]["n"]
+
+        if not airline_rows:
+            st.info(
+                "Pas encore de données compagnies. La troisième source (base "
+                "aéronefs OpenSky + compagnies OpenFlights) se remplit avec le pipeline.",
+            )
+        else:
+            fleet_left, fleet_right = st.columns(2)
+
+            with fleet_left:
+                top_airports = load(
+                    """
+                    select airport_iata_code, airport_label, sum(distinct_aircraft) as n
+                    from marts.fct_airline_airport_activity
+                    where airline_name is not null and airport_iata_code is not null
+                    group by 1, 2
+                    order by n desc
+                    limit 12
+                    """
+                )
+                labels = dict(
+                    zip(
+                        top_airports["airport_iata_code"],
+                        top_airports["airport_label"],
+                        strict=False,
+                    )
+                )
+                choice = st.selectbox(
+                    "Part de marché des compagnies à l'aéroport",
+                    options=list(labels.keys()),
+                    format_func=lambda code: labels.get(code, code),
+                )
+                here = load(
+                    "select airline_name, sum(distinct_aircraft) as aeronefs "
+                    "from marts.fct_airline_airport_activity "
+                    f"where airport_iata_code = '{choice}' and airline_name is not null "
+                    "group by 1 order by 2 desc limit 10"
+                )
+                bar = px.bar(
+                    here.sort_values("aeronefs"),
+                    x="aeronefs",
+                    y="airline_name",
+                    orientation="h",
+                    labels={"aeronefs": "Aéronefs distincts", "airline_name": ""},
+                )
+                selected_airline = active_filters().get("airline_name")
+                bar.update_traces(
+                    marker={
+                        "color": [
+                            "#22d3ee" if a == selected_airline else "#34d399"
+                            for a in here.sort_values("aeronefs")["airline_name"]
+                        ],
+                        "opacity": 0.9,
+                    }
+                )
+                style_fig(bar, height=360)
+                st.plotly_chart(bar, width="stretch", config=chart_config())
+
+            with fleet_right:
+                makers = load(
+                    """
+                    select manufacturer_group, count(*) as aeronefs
+                    from marts.dim_aircraft
+                    where manufacturer_group <> 'Inconnu'
+                    group by 1
+                    order by 2 desc
+                    """
+                )
+                donut = px.pie(
+                    makers,
+                    names="manufacturer_group",
+                    values="aeronefs",
+                    hole=0.58,
+                    color_discrete_sequence=NEON,
+                )
+                selected_maker = active_filters().get("manufacturer_group")
+                donut.update_traces(
+                    textinfo="label+percent",
+                    textfont={"family": "Inter, sans-serif", "size": 11},
+                    marker={"line": {"color": "#04070e", "width": 2}},
+                    pull=[0.08 if m == selected_maker else 0 for m in makers["manufacturer_group"]],
+                )
+                style_fig(donut, height=360)
+                donut.update_layout(
+                    showlegend=False,
+                    title={"text": "Constructeurs (Airbus vs Boeing...)", "y": 0.97},
+                    margin={"l": 8, "r": 8, "t": 46, "b": 6},
+                )
+                st.plotly_chart(donut, width="stretch", config=chart_config())
+                st.caption(
+                    "Type et constructeur issus de la base aéronefs OpenSky ; "
+                    "compagnie déduite du préfixe d'indicatif (OpenFlights)."
+                )
+
+            # Top modèles d'avions (tous les types répertoriés dans la base).
+            models = load(
+                """
+                select
+                    aircraft_type,
+                    any_value(manufacturer) as manufacturer,
+                    count(*)                as aeronefs
                 from marts.dim_aircraft
-                where manufacturer_group <> 'Inconnu'
-                group by 1
-                order by 2 desc
+                where aircraft_type is not null
+                group by aircraft_type
+                order by aeronefs desc
+                limit 15
                 """
             )
-            donut = px.pie(
-                makers,
-                names="manufacturer_group",
-                values="aeronefs",
-                hole=0.58,
-                color_discrete_sequence=NEON,
-            )
-            selected_maker = active_filters().get("manufacturer_group")
-            donut.update_traces(
-                textinfo="label+percent",
-                textfont={"family": "Inter, sans-serif", "size": 11},
-                marker={"line": {"color": "#04070e", "width": 2}},
-                pull=[0.08 if m == selected_maker else 0 for m in makers["manufacturer_group"]],
-            )
-            style_fig(donut, height=360)
-            donut.update_layout(
-                showlegend=False,
-                title={"text": "Constructeurs (Airbus vs Boeing...)", "y": 0.97},
-                margin={"l": 8, "r": 8, "t": 46, "b": 6},
-            )
-            st.plotly_chart(donut, width="stretch")
-            st.caption(
-                "Type et constructeur issus de la base aéronefs OpenSky ; "
-                "compagnie déduite du préfixe d'indicatif (OpenFlights)."
-            )
+            if not models.empty:
+                # Étiquette lisible : "Boeing B738" plutôt que le code seul.
+                models["label"] = [
+                    f"{m} {t}" if m else t
+                    for m, t in zip(models["manufacturer"], models["aircraft_type"], strict=False)
+                ]
+                model_chart = px.bar(
+                    models.sort_values("aeronefs"),
+                    x="aeronefs",
+                    y="label",
+                    orientation="h",
+                    labels={"aeronefs": "Aéronefs distincts", "label": ""},
+                    text="aeronefs",
+                )
+                model_chart.update_traces(
+                    marker={"color": "#b388ff", "opacity": 0.9},
+                    textposition="outside",
+                    textfont={"color": "#dbe7ff", "family": "Share Tech Mono, monospace"},
+                    cliponaxis=False,
+                )
+                style_fig(model_chart, height=480)
+                model_chart.update_layout(
+                    title={"text": "Modèles d'avions les plus vus", "y": 0.97},
+                    margin={"l": 8, "r": 44, "t": 48, "b": 6},
+                )
+                st.plotly_chart(model_chart, width="stretch", config=chart_config())
 
-        # Top modèles d'avions (tous les types répertoriés dans la base).
-        models = load(
+    with section("Trafic et qualité de l'air", collapsible=True):
+        air_quality = load(
             """
-            select
-                aircraft_type,
-                any_value(manufacturer) as manufacturer,
-                count(*)                as aeronefs
-            from marts.dim_aircraft
-            where aircraft_type is not null
-            group by aircraft_type
-            order by aeronefs desc
-            limit 15
-            """
-        )
-        if not models.empty:
-            # Étiquette lisible : "Boeing B738" plutôt que le code seul.
-            models["label"] = [
-                f"{m} {t}" if m else t
-                for m, t in zip(models["manufacturer"], models["aircraft_type"], strict=False)
-            ]
-            model_chart = px.bar(
-                models.sort_values("aeronefs"),
-                x="aeronefs",
-                y="label",
-                orientation="h",
-                labels={"aeronefs": "Aéronefs distincts", "label": ""},
-                text="aeronefs",
-            )
-            model_chart.update_traces(
-                marker={"color": "#b388ff", "opacity": 0.9},
-                textposition="outside",
-                textfont={"color": "#dbe7ff", "family": "Share Tech Mono, monospace"},
-                cliponaxis=False,
-            )
-            style_fig(model_chart, height=480)
-            model_chart.update_layout(
-                title={"text": "Modèles d'avions les plus vus", "y": 0.97},
-                margin={"l": 8, "r": 44, "t": 48, "b": 6},
-            )
-            st.plotly_chart(model_chart, width="stretch")
-
-    # -- Deuxième source : trafic et qualité de l'air ----------------------
-    st.divider()
-    st.subheader("Trafic et qualité de l'air")
-
-    air_quality = load(
-        """
-        with panel as (
-            select
-                distinct_aircraft,
-                no2_ugm3,
-                distinct_aircraft
-                    - avg(distinct_aircraft) over (partition by airport_id) as ac_within,
-                no2_ugm3
-                    - avg(no2_ugm3) over (partition by airport_id) as no2_within
-            from marts.fct_airport_hourly_air_quality
-            where no2_ugm3 is not null
-        )
-        select
-            count(*)                          as n,
-            corr(distinct_aircraft, no2_ugm3) as r_naive,
-            corr(ac_within, no2_within)       as r_within
-        from panel
-        """
-    ).iloc[0]
-
-    if not air_quality["n"] or air_quality["n"] < 10:
-        st.info(
-            "Pas encore assez de données croisées trafic / qualité de l'air. "
-            "La deuxième source (Open-Météo) se remplit avec le pipeline.",
-        )
-    else:
-        left, right = st.columns([1, 2])
-        with left:
-            st.metric(
-                "Corrélation r (brute)",
-                f"{air_quality['r_naive']:+.2f}",
-                help=(
-                    "Coefficient de corrélation de Pearson entre le nombre "
-                    "d'avions et le NO2, par heure. Sans unité, de -1 à +1 "
-                    "(0 = aucun lien). Le NO2 est mesuré en µg/m³."
-                ),
-            )
-            st.metric(
-                "Corrélation r (intra-aéroport)",
-                f"{air_quality['r_within']:+.2f}",
-                help=(
-                    "Même coefficient, après retrait de la moyenne de chaque "
-                    "aéroport. La corrélation brute, positive, s'inverse : le "
-                    "lien n'est qu'un artefact 'entre aéroports'."
-                ),
-            )
-            st.caption(
-                "r = coefficient de corrélation de Pearson (sans unité, -1 à +1). "
-                "À l'échelle horaire, le trafic aérien n'est pas un prédicteur "
-                "détectable du NO2 au sol. Analyse complète : "
-                "`docs/analyse_trafic_qualite_air.md`."
-            )
-        with right:
-            panel = load(
-                """
-                select distinct_aircraft, no2_ugm3, airport_iata_code
+            with panel as (
+                select
+                    distinct_aircraft,
+                    no2_ugm3,
+                    distinct_aircraft
+                        - avg(distinct_aircraft) over (partition by airport_id) as ac_within,
+                    no2_ugm3
+                        - avg(no2_ugm3) over (partition by airport_id) as no2_within
                 from marts.fct_airport_hourly_air_quality
                 where no2_ugm3 is not null
-                """
             )
-            scatter = px.scatter(
-                panel,
-                x="distinct_aircraft",
-                y="no2_ugm3",
-                color="airport_iata_code",
-                labels={
-                    "distinct_aircraft": "Avions distincts par heure",
-                    "no2_ugm3": "NO2 au sol (µg/m³)",
-                    "airport_iata_code": "Aéroport",
-                },
+            select
+                count(*)                          as n,
+                corr(distinct_aircraft, no2_ugm3) as r_naive,
+                corr(ac_within, no2_within)       as r_within
+            from panel
+            """
+        ).iloc[0]
+
+        if not air_quality["n"] or air_quality["n"] < 10:
+            st.info(
+                "Pas encore assez de données croisées trafic / qualité de l'air. "
+                "La deuxième source (Open-Météo) se remplit avec le pipeline.",
             )
-            scatter.update_traces(marker={"size": 7, "opacity": 0.75})
-            style_fig(scatter, height=360)
-            st.plotly_chart(scatter, width="stretch")
+        else:
+            left, right = st.columns([1, 2])
+            with left:
+                st.metric(
+                    "Corrélation r (brute)",
+                    f"{air_quality['r_naive']:+.2f}",
+                    help=(
+                        "Coefficient de corrélation de Pearson entre le nombre "
+                        "d'avions et le NO2, par heure. Sans unité, de -1 à +1 "
+                        "(0 = aucun lien). Le NO2 est mesuré en µg/m³."
+                    ),
+                )
+                st.metric(
+                    "Corrélation r (intra-aéroport)",
+                    f"{air_quality['r_within']:+.2f}",
+                    help=(
+                        "Même coefficient, après retrait de la moyenne de chaque "
+                        "aéroport. La corrélation brute, positive, s'inverse : le "
+                        "lien n'est qu'un artefact 'entre aéroports'."
+                    ),
+                )
+                st.caption(
+                    "r = coefficient de corrélation de Pearson (sans unité, -1 à +1). "
+                    "À l'échelle horaire, le trafic aérien n'est pas un prédicteur "
+                    "détectable du NO2 au sol. Analyse complète : "
+                    "`docs/analyse_trafic_qualite_air.md`."
+                )
+            with right:
+                panel = load(
+                    """
+                    select distinct_aircraft, no2_ugm3, airport_iata_code
+                    from marts.fct_airport_hourly_air_quality
+                    where no2_ugm3 is not null
+                    """
+                )
+                scatter = px.scatter(
+                    panel,
+                    x="distinct_aircraft",
+                    y="no2_ugm3",
+                    color="airport_iata_code",
+                    labels={
+                        "distinct_aircraft": "Avions distincts par heure",
+                        "no2_ugm3": "NO2 au sol (µg/m³)",
+                        "airport_iata_code": "Aéroport",
+                    },
+                )
+                scatter.update_traces(marker={"size": 7, "opacity": 0.75})
+                style_fig(scatter, height=360)
+                st.plotly_chart(scatter, width="stretch", config=chart_config())
 
     # -- Pied de page ------------------------------------------------------
     st.divider()

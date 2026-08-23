@@ -48,12 +48,18 @@ enriched as (
         -- position
         latitude,
         longitude,
+        -- Les deux systemes d'unites sont exposes cote a cote. Le tableau de
+        -- bord affiche les unites AERONAUTIQUES (pieds, noeuds) : ce sont les
+        -- unites de reference de l'OACI, utilisees en vol partout dans le
+        -- monde, France comprise. Les colonnes SI (metres, m/s, km/h) restent
+        -- disponibles pour toute analyse hors contexte aeronautique.
         barometric_altitude_m,
         geometric_altitude_m,
         barometric_altitude_m * 3.28084             as barometric_altitude_ft,
 
         -- dynamique
         ground_speed_ms,
+        ground_speed_ms * 3.6                       as ground_speed_kmh,
         ground_speed_ms * 1.94384                   as ground_speed_kt,
         heading_deg,
         vertical_rate_ms,

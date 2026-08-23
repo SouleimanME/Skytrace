@@ -28,6 +28,7 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 import plotly.express as px
+import pydeck as pdk
 import streamlit as st
 
 # Permet un lancement direct par Streamlit, qui ne connait pas `src/`.
@@ -86,10 +87,22 @@ SCHEDULE_MINUTES = 30
 NOMINAL_MAX_MINUTES = 75
 DEGRADED_MAX_MINUTES = 240
 
-#: Nombre maximal de marqueurs traces sur la carte. Au-dela, le navigateur
-#: peine a animer le nuage (un releve mondial depasse 7 000 aeronefs) et le
-#: defilement devient poussif ; on echantillonne alors, en l'annoncant.
-MAP_MAX_POINTS = 3000
+#: Couleurs des phases de vol en RGB, pour deck.gl (qui ne lit pas
+#: l'hexadecimal). Memes teintes que PHASE_COLOURS, pour que la carte et les
+#: graphes racontent la meme chose.
+PHASE_RGB = {
+    "croisiere": (34, 211, 238),
+    "montee": (52, 211, 153),
+    "descente": (251, 191, 36),
+    "sol": (120, 140, 170),
+    "inconnu": (90, 105, 130),
+}
+
+#: Taille des silhouettes d'avion, en pixels (constante quel que soit le
+#: zoom). Volontairement petite : en vue monde, 8 000 appareils se recouvrent
+#: des que l'icone depasse une dizaine de pixels, et la carte devient une
+#: tache illisible. Le detail se lit en zoomant.
+AIRCRAFT_ICON_SIZE = 9
 
 
 # ---------------------------------------------------------------------------
@@ -134,16 +147,14 @@ body, .stApp, p, span, label, li, div[data-testid="stMarkdownContainer"]{
   color:var(--text); font-family:'Inter','Segoe UI',sans-serif;
   font-size:0.94rem; line-height:1.55;
 }
-/* Titres de section : Inter en graisse forte plutot qu'une police "techno".
-   Le filet cyan est une BORDURE et non un pseudo-element positionne en
-   absolu : Streamlit enveloppe les titres dans plusieurs conteneurs, et un
-   `position:absolute` s'ancrait sur le mauvais parent - d'ou une barre qui
-   se detachait du titre. Une bordure suit toujours son element. */
+/* Titres de section : Inter en graisse forte, sans ornement. La hierarchie
+   passe par la graisse, la casse et l'espacement des lettres - un filet
+   colore n'apportait rien et se comportait mal dans les conteneurs imbriques
+   de Streamlit. */
 h1,h2,h3{ font-family:'Inter','Segoe UI',sans-serif !important; }
 h2,h3{
-  color:#dff6fb; font-weight:600; letter-spacing:0.06em; text-transform:uppercase;
-  border-left:3px solid var(--cyan); padding-left:12px; text-shadow:none;
-  line-height:1.35;
+  color:#dff6fb; font-weight:600; letter-spacing:0.08em; text-transform:uppercase;
+  text-shadow:none; line-height:1.35; margin-bottom:.35rem;
 }
 h2{ font-size:1.02rem;} h3{ font-size:0.92rem;}
 
@@ -234,6 +245,67 @@ hr{ border:none; height:1px; background:linear-gradient(90deg,transparent,var(--
 
 def inject_theme() -> None:
     st.markdown(f"<style>{THEME_CSS}</style>", unsafe_allow_html=True)
+
+
+@st.cache_resource(show_spinner=False)
+def aircraft_icon() -> dict:
+    """Silhouette d'avion, generee puis embarquee en data URI.
+
+    Dessinee a la volee plutot que chargee depuis un fichier ou un CDN : pas
+    d'actif binaire a versionner, et rien a telecharger au rendu (une regle
+    de securite stricte cote Streamlit Cloud bloquerait un hote externe).
+
+    L'icone est peinte en blanc et declaree `mask: true` : deck.gl s'en sert
+    alors comme pochoir et applique la couleur de chaque appareil, ce qui
+    evite de generer une icone par phase de vol.
+    """
+    import base64
+    from io import BytesIO
+
+    from PIL import Image, ImageDraw
+
+    size = 128
+    image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    # Nez vers le HAUT : deck.gl considere 0 degre comme pointant vers le nord.
+    draw.polygon(
+        [
+            (64, 5),
+            (69, 26),
+            (71, 48),
+            (124, 78),
+            (124, 92),
+            (71, 78),
+            (69, 101),
+            (83, 115),
+            (83, 123),
+            (64, 116),
+            (45, 123),
+            (45, 115),
+            (59, 101),
+            (57, 78),
+            (4, 92),
+            (4, 78),
+            (57, 48),
+            (59, 26),
+        ],
+        fill=(255, 255, 255, 255),
+    )
+
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return {
+        "url": f"data:image/png;base64,{encoded}",
+        "width": size,
+        "height": size,
+        "anchorX": size // 2,
+        "anchorY": size // 2,
+        "mask": True,
+    }
+
+
+AIRCRAFT_ICON = aircraft_icon()
 
 
 def style_fig(fig, height: int | None = None):
@@ -428,13 +500,32 @@ with st.sidebar:
             "nouvelles donnees n'apparaissent qu'apres une execution planifiee."
         ),
     )
+    # Deux familles d'intervalles : les courts (15 s a 5 min) servent au
+    # developpement et a la surveillance rapprochee ; les longs (30 min a 24 h)
+    # correspondent a la cadence reelle de la collecte, au-dela de laquelle
+    # recharger plus souvent n'apporte aucune donnee nouvelle.
+    interval_choices = {
+        "15 s": 15,
+        "30 s": 30,
+        "1 min": 60,
+        "5 min": 300,
+        "30 min": 1800,
+        "60 min": 3600,
+        "6 h": 21600,
+        "12 h": 43200,
+        "24 h": 86400,
+    }
     interval_label = st.selectbox(
         "Intervalle",
-        options=["15 s", "30 s", "1 min", "5 min"],
+        options=list(interval_choices),
         index=2,
         disabled=not auto_refresh,
+        help=(
+            "Cadence de rechargement de la page. La collecte, elle, tourne "
+            "toutes les 30 min : au-dela, aucune donnee nouvelle n'arrive."
+        ),
     )
-    interval_seconds = {"15 s": 15, "30 s": 30, "1 min": 60, "5 min": 300}[interval_label]
+    interval_seconds = interval_choices[interval_label]
 
     if st.button("Recharger maintenant", use_container_width=True):
         st.cache_data.clear()
@@ -446,7 +537,12 @@ with st.sidebar:
         "(GitHub Actions en production, Dagster en local)."
     )
 
-# Sur un environnement neuf, construire l'entrepot avant toute lecture.
+# Construction INITIALE, indispensable avant la verification d'etat qui suit :
+# sur un environnement neuf (Streamlit Cloud), l'entrepot n'existe pas encore
+# et la page s'arreterait avant meme d'avoir tente de le batir. Le
+# rafraichissement periodique, lui, se fait dans le fragment `render()`.
+# `st.cache_resource` rend ce second appel gratuit tant que le creneau de
+# reconstruction n'a pas change.
 try:
     import time as _time
 
@@ -481,7 +577,21 @@ def render() -> None:
 
     Isole dans un fragment : Streamlit ne rejoue que cette fonction, sans
     reinitialiser les commandes de la barre laterale.
+
+    C'est aussi ICI que l'entrepot est rafraichi, et non dans le corps du
+    script. Un `run_every` ne rejoue QUE le fragment : place au niveau du
+    script, la reconstruction n'aurait lieu qu'au chargement initial de la
+    page, et le tableau de bord afficherait indefiniment des donnees figees
+    pendant que le collecteur, lui, continue d'alimenter le lac.
     """
+    import time as _time
+
+    try:
+        ensure_warehouse_built(int(_time.time() // REBUILD_INTERVAL_SECONDS))
+    except Exception as exc:  # noqa: BLE001 - une reconstruction ratee ne doit
+        # pas vider la page : on garde l'affichage precedent et on le signale.
+        st.warning(f"Rafraichissement de l'entrepot impossible : {exc}")
+
     try:
         _render_body()
     except duckdb.IOException:
@@ -580,14 +690,10 @@ def _render_body() -> None:
         )
         style_fig(series, height=340)
         series.update_layout(legend={"orientation": "h", "y": 1.14, "x": 0}, hovermode="x unified")
-        # Spike propre : un fin trait cyan continu au lieu du pointille par defaut.
-        series.update_xaxes(
-            showspikes=True,
-            spikemode="across",
-            spikethickness=1,
-            spikedash="solid",
-            spikecolor="rgba(0,229,255,0.45)",
-        )
+        # Pas de "spike" vertical : `hovermode="x unified"` designe deja le
+        # releve survole et en affiche les valeurs. Une barre en plus est
+        # redondante, et Plotly la dessine large et opaque.
+        series.update_xaxes(showspikes=False)
         st.plotly_chart(series, use_container_width=True)
         st.caption(
             f"{len(per_snapshot)} releves. Chaque point est une execution du "
@@ -602,7 +708,7 @@ def _render_body() -> None:
     latest = load(
         """
         select
-            latitude, longitude, callsign, origin_country,
+            latitude, longitude, callsign, origin_country, heading_deg,
             barometric_altitude_ft, ground_speed_kt, flight_phase, aircraft_icao24
         from marts.fct_aircraft_positions
         where snapshot_at = (select max(snapshot_at) from marts.fct_aircraft_positions)
@@ -615,77 +721,87 @@ def _render_body() -> None:
         if latest.empty:
             st.info("Aucune position sur le dernier snapshot.")
         else:
-            # Le point porte deux informations : la couleur dit la phase de
-            # vol, la taille dit l'altitude. Un appareil au sol apparait donc
-            # petit et gris, un long-courrier en croisiere gros et cyan - la
-            # structure du trafic se lit sans legende.
-            latest = latest.copy()
-            latest["altitude_ft"] = latest["barometric_altitude_ft"].fillna(0).clip(lower=0)
-
-            # En zone monde un releve depasse 7 000 aeronefs : le navigateur
-            # peine a animer autant de marqueurs et la page devient poussive.
-            # Au-dela du seuil on echantillonne (graine fixe, donc stable d'un
-            # rafraichissement a l'autre) : la structure geographique reste
-            # identique, et le fait est annonce sous la carte plutot que tu.
-            plotted, total = latest, len(latest)
-            if total > MAP_MAX_POINTS:
-                plotted = latest.sample(MAP_MAX_POINTS, random_state=0)
+            # Chaque appareil est dessine comme une silhouette d'avion orientee
+            # selon son cap reel : l'image donne alors les flux (couloirs
+            # transatlantiques, approches d'aeroport) qu'un simple point ne
+            # montre pas. La couleur reste la phase de vol.
+            #
+            # deck.gl dessine sur GPU : les 8 000 aeronefs d'un releve mondial
+            # passent sans peine, la ou Plotly (rendu SVG) imposait un
+            # echantillonnage. On affiche donc la totalite du releve.
+            plotted = latest.copy()
+            plotted["angle"] = -plotted["heading_deg"].fillna(0)
+            plotted["colour"] = [PHASE_RGB.get(p, (150, 160, 180)) for p in plotted["flight_phase"]]
+            plotted["icon"] = [AIRCRAFT_ICON] * len(plotted)
+            plotted["callsign"] = plotted["callsign"].fillna("(sans indicatif)")
+            plotted["altitude_txt"] = plotted["barometric_altitude_ft"].map(
+                lambda v: "-" if pd.isna(v) else f"{v:,.0f} ft".replace(",", " ")
+            )
+            plotted["vitesse_txt"] = plotted["ground_speed_kt"].map(
+                lambda v: "-" if pd.isna(v) else f"{v:.0f} kt"
+            )
 
             # Cadrage automatique sur la donnee reelle plutot qu'un zoom fixe :
             # la meme page reste lisible que la zone soit la France ou le monde.
             lat_span = plotted["latitude"].max() - plotted["latitude"].min()
             lon_span = plotted["longitude"].max() - plotted["longitude"].min()
             span = max(lat_span, lon_span / 1.8, 1.0)
-            zoom = max(1.0, min(6.5, 7.6 - math.log2(span)))
+            zoom = max(1.0, min(6.5, 7.2 - math.log2(span)))
 
-            figure = px.scatter_map(
-                plotted,
-                lat="latitude",
-                lon="longitude",
-                color="flight_phase",
-                color_discrete_map=PHASE_COLOURS,
-                size="altitude_ft",
-                size_max=11,
-                zoom=zoom,
-                center={
-                    "lat": float(plotted["latitude"].median()),
-                    "lon": float(plotted["longitude"].median()),
-                },
+            # Attention : pydeck transforme toute CHAINE de caracteres en
+            # accesseur de colonne. Passer `size_units="pixels"` produisait
+            # `sizeUnits: @@=pixels`, soit "lis la colonne pixels" - colonne
+            # inexistante, d'ou un dimensionnement aberrant. Les unites en
+            # pixels etant deja le defaut de deck.gl, on ne les precise pas ;
+            # seules des valeurs NUMERIQUES sont passees ici.
+            layer = pdk.Layer(
+                "IconLayer",
+                data=plotted,
+                get_icon="icon",
+                get_position=["longitude", "latitude"],
+                get_angle="angle",
+                get_color="colour",
+                get_size=AIRCRAFT_ICON_SIZE,
+                size_min_pixels=5,
+                size_max_pixels=AIRCRAFT_ICON_SIZE,
+                opacity=0.85,
+                pickable=True,
+            )
+            st.pydeck_chart(
+                pdk.Deck(
+                    layers=[layer],
+                    initial_view_state=pdk.ViewState(
+                        latitude=float(plotted["latitude"].median()),
+                        longitude=float(plotted["longitude"].median()),
+                        zoom=zoom,
+                    ),
+                    map_style=pdk.map_styles.CARTO_DARK,
+                    tooltip={
+                        "html": (
+                            "<b>{callsign}</b><br/>{origin_country}"
+                            "<br/>{altitude_txt} &middot; {vitesse_txt}"
+                            "<br/><span style='opacity:.7'>{flight_phase}</span>"
+                        ),
+                        "style": {
+                            "backgroundColor": "rgba(10,17,32,0.96)",
+                            "color": "#eaf9ff",
+                            "fontFamily": "Inter, sans-serif",
+                            "fontSize": "12px",
+                            "border": "1px solid #22d3ee",
+                            "borderRadius": "8px",
+                        },
+                    },
+                ),
                 height=560,
-                hover_name="callsign",
-                hover_data={
-                    "origin_country": True,
-                    "barometric_altitude_ft": ":,.0f",
-                    "ground_speed_kt": ":.0f",
-                    "altitude_ft": False,
-                    "latitude": False,
-                    "longitude": False,
-                },
-                labels={"flight_phase": "Phase"},
             )
-            style_fig(figure)
-            figure.update_traces(marker={"opacity": 0.78, "sizemin": 3})
-            figure.update_layout(
-                map_style="carto-darkmatter",
-                margin={"l": 0, "r": 0, "t": 0, "b": 0},
-                legend={
-                    "orientation": "h",
-                    "y": -0.04,
-                    "x": 0,
-                    "title": None,
-                    "font": {"family": "Inter, sans-serif", "size": 11},
-                },
-            )
-            st.plotly_chart(figure, use_container_width=True)
-            note = (
-                f"{len(plotted):,} points affiches sur {total:,} "
-                "(echantillon, pour garder la carte fluide). "
-                if len(plotted) < total
-                else ""
-            ).replace(",", " ")
             st.caption(
-                f"{note}Couleur = phase de vol, taille = altitude. Cadrage "
-                "ajuste automatiquement a l'etendue des positions du releve."
+                f"{len(plotted):,} aeronefs du dernier releve. ".replace(",", " ")
+                + "Chaque silhouette est orientee selon le cap reel de "
+                "l'appareil ; la couleur indique la phase de vol. "
+                "**Les zones vides ne sont pas des zones sans trafic** : le "
+                "reseau OpenSky repose sur des recepteurs benevoles, denses en "
+                "Europe et en Amerique du Nord, rares ailleurs. Les volumes ne "
+                "sont pas comparables d'une region a l'autre."
             )
 
     with phase_column:

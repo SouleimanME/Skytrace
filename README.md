@@ -358,10 +358,21 @@ Elles sont assumées et documentées plutôt que masquées :
   `descending_aircraft` reposent sur le taux de montée observé à proximité
   d'un aéroport. Fiable en tendance, pas comme comptage officiel de
   mouvements.
-- **La couverture ADS-B est inégale.** Le réseau OpenSky repose sur des
-  récepteurs bénévoles : dense en Europe de l'Ouest, clairsemé ailleurs et
-  au-dessus des océans. Les volumes ne sont donc pas comparables d'une
-  région à l'autre.
+- **La couverture ADS-B est très inégale — c'est la limite principale.** Le
+  réseau OpenSky repose sur des récepteurs hébergés par des bénévoles : là où
+  personne n'en installe, aucun avion n'est vu, même s'il en passe. Mesuré sur
+  un relevé mondial de 8 194 aéronefs :
+
+  | Europe | Amérique du Nord | Asie (S/E) | Afrique | Moyen-Orient | Russie |
+  |---|---|---|---|---|---|
+  | 57 % | 19 % | 13 % | 4 % | **0,6 %** | **0,2 %** |
+
+  Le Moyen-Orient à 0,6 % alors que Dubaï et Doha comptent parmi les premiers
+  hubs mondiaux montre bien qu'il s'agit d'un biais d'observation, pas d'une
+  réalité du trafic. **Ces données mesurent le trafic observable par le
+  réseau, pas le trafic réel** : toute comparaison entre régions est donc à
+  proscrire, et les analyses de ce projet restent intra-région ou
+  intra-aéroport.
 - **En mode anonyme, pas d'historique.** Seul l'instant présent est
   accessible : la profondeur d'historique se construit en laissant tourner
   l'ordonnanceur.

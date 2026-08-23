@@ -153,6 +153,13 @@ latérale) et affiche un **bandeau de fraîcheur** : vert si le dernier relevé
 date de moins d'un cycle, rouge s'il remonte à plusieurs heures - auquel cas
 le planning Dagster est à l'arrêt et la série temporelle ne se remplit plus.
 
+Sur la carte, chaque appareil est une silhouette orientée selon son cap réel.
+**Un clic ouvre sa fiche** : photographie de l'appareil lui-même (Planespotters,
+appelée par adresse OACI 24 bits, donc la vraie machine et non une image
+générique du type), compagnie, immatriculation, modèle, année, altitude,
+vitesse et cap. Les exploitants d'État ou militaires sont signalés - par
+heuristique sur le nom de l'exploitant, donc faillible dans les deux sens.
+
 ### 5. Lancer l'orchestrateur
 
 ```bash
@@ -358,7 +365,7 @@ Elles sont assumées et documentées plutôt que masquées :
   `descending_aircraft` reposent sur le taux de montée observé à proximité
   d'un aéroport. Fiable en tendance, pas comme comptage officiel de
   mouvements.
-- **La couverture ADS-B est très inégale — c'est la limite principale.** Le
+- **La couverture ADS-B est très inégale, c'est la limite principale.** Le
   réseau OpenSky repose sur des récepteurs hébergés par des bénévoles : là où
   personne n'en installe, aucun avion n'est vu, même s'il en passe. Mesuré sur
   un relevé mondial de 8 194 aéronefs :
@@ -390,5 +397,8 @@ Elles sont assumées et documentées plutôt que masquées :
   métadonnées aéronefs, usage non commercial et recherche
 - [OpenFlights](https://openflights.org/data.html) - référentiel compagnies,
   Open Database License
+- [Planespotters](https://www.planespotters.net/photos/api) - photographies
+  d'aéronefs, usage non commercial ; chaque cliché est crédité à son auteur
+  dans l'interface
 
 Code sous licence MIT.

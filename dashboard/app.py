@@ -1,24 +1,25 @@
 """Tableau de bord SkyTrace (interface radar / HUD).
 
-Le tableau de bord ne connait que les tables `marts`. Il n'ouvre jamais un
-fichier Parquet et ne recalcule jamais une agregation : c'est le contrat de
-la couche gold. Consequence pratique - si une definition metier change, on
-la corrige dans un modele dbt, teste et versionne, pas dans une page.
+Le tableau de bord ne connaît que les tables `marts`. Il n'ouvre jamais un
+fichier Parquet et ne recalcule jamais une agrégation : c'est le contrat de
+la couche gold. Conséquence pratique - si une definition métier change, on
+la corrige dans un modèle dbt, testé et versionné, pas dans une page.
 
-Le pipeline est batch, pas streaming : la serie temporelle ne se
-"rafraichit" pas, elle s'accumule. Chaque execution planifiee ajoute un
-point. La page se recharge donc periodiquement pour afficher les points
-nouvellement arrives, et signale explicitement si plus rien n'arrive.
+Le pipeline est batch, pas streaming : la série temporelle ne se
+"rafraîchit" pas, elle s'accumule. Chaque exécution planifiée ajoute un
+point. La page se recharge donc périodiquement pour afficher les points
+nouvellement arrivés, et signale explicitement si plus rien n'arrive.
 
-Le rendu vise une esthetique "cockpit" : fond sombre, grille technique,
-neons cyan / vert, typographie Orbitron. Le style vit dans THEME_CSS ; la
-logique de donnees est identique a une version sobre.
+Le rendu vise une esthétique "cockpit" : fond sombre, grille technique,
+néons cyan / vert, typographie Orbitron. Le style vit dans THEME_CSS ; la
+logique de données est identique à une version sobre.
 
 Lancement : `skytrace dashboard` (ou `streamlit run dashboard/app.py`).
 """
 
 from __future__ import annotations
 
+import html
 import math
 import os
 import sys
@@ -30,13 +31,14 @@ import pandas as pd
 import plotly.express as px
 import pydeck as pdk
 import streamlit as st
+from pydeck.types import String as PdkString
 
-# Permet un lancement direct par Streamlit, qui ne connait pas `src/`.
+# Permet un lancement direct par Streamlit, qui ne connaît pas `src/`.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 # Streamlit Community Cloud fournit les secrets via st.secrets (TOML), pas via
 # l'environnement. On les recopie dans os.environ AVANT get_settings() pour que
-# la configuration (region, R2...) les prenne en compte.
+# la configuration (région, R2...) les prenne en compte.
 for _key in (
     "SKYTRACE_REGION",
     "SKYTRACE_R2_ACCOUNT_ID",
@@ -51,6 +53,7 @@ for _key in (
         break
 
 from skytrace.config import get_settings  # noqa: E402
+from skytrace.photos import fetch_photo, looks_military  # noqa: E402
 from skytrace.warehouse.duck import WAREHOUSE_TIMEZONE  # noqa: E402
 
 SETTINGS = get_settings()
@@ -61,14 +64,14 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-#: Palette, reutilisee par les graphes et le theme CSS. Teintes moins
-#: saturees que du neon pur : sur fond sombre, elles restent distinctes sans
-#: vibrer, et supportent d'etre superposees en semi-transparence.
+#: Palette, réutilisée par les graphes et le thème CSS. Teintes moins
+#: saturées que du néon pur : sur fond sombre, elles restent distinctes sans
+#: vibrer, et supportent d'être superposées en semi-transparence.
 NEON = ["#22d3ee", "#3b82f6", "#34d399", "#fbbf24", "#fb7185", "#a78bfa", "#67e8f9"]
 
-#: Une phase de vol = une couleur, choisie pour rester distinguable meme
-#: pour un daltonisme rouge-vert (le vert monte / l'ambre descend different
-#: aussi par la luminosite).
+#: Une phase de vol = une couleur, choisie pour rester distinguable même
+#: pour un daltonisme rouge-vert (le vert monte / l'ambre descend différent
+#: aussi par la luminosité).
 PHASE_COLOURS = {
     "croisiere": "#22d3ee",
     "montee": "#34d399",
@@ -77,19 +80,37 @@ PHASE_COLOURS = {
     "inconnu": "#475569",
 }
 
-#: Cadence NOMINALE du collecteur deploye (cron GitHub Actions).
+#: Cadence NOMINALE du collecteur déployé (cron GitHub Actions).
 SCHEDULE_MINUTES = 30
 
-#: Seuils de fraicheur, calibres sur le comportement observe et non sur la
-#: cadence nominale : GitHub differe frequemment les crons (ecarts mesures
-#: ici entre 50 min et 3 h). Alerter des 35 min reviendrait a alerter en
-#: permanence, donc a ne plus rien signaler du tout.
+#: Seuils de fraîcheur, calibrés sur le comportement observé et non sur la
+#: cadence nominale : GitHub diffère fréquemment les crons (écarts mesurés
+#: ici entre 50 min et 3 h). Alerter dès 35 min reviendrait à alerter en
+#: permanence, donc à ne plus rien signaler du tout.
 NOMINAL_MAX_MINUTES = 75
 DEGRADED_MAX_MINUTES = 240
 
+#: Les phases de vol restent en ASCII dans l'entrepôt : ce sont des clés de
+#: jointure entre le modèle dbt, les tests de données et l'interface. Un
+#: accent dans une valeur stockée finirait tôt ou tard par ne plus
+#: correspondre. L'accent appartient donc à l'affichage, et à lui seul.
+PHASE_LABELS = {
+    "croisiere": "croisière",
+    "montee": "montée",
+    "descente": "descente",
+    "sol": "sol",
+    "inconnu": "inconnu",
+}
+
+
+def phase_label(value: str) -> str:
+    """Libellé affichable d'une phase de vol (identité si inconnue)."""
+    return PHASE_LABELS.get(value, value)
+
+
 #: Couleurs des phases de vol en RGB, pour deck.gl (qui ne lit pas
-#: l'hexadecimal). Memes teintes que PHASE_COLOURS, pour que la carte et les
-#: graphes racontent la meme chose.
+#: l'hexadécimal). Mêmes teintes que PHASE_COLOURS, pour que la carte et les
+#: graphes racontent la même chose.
 PHASE_RGB = {
     "croisiere": (34, 211, 238),
     "montee": (52, 211, 153),
@@ -100,13 +121,17 @@ PHASE_RGB = {
 
 #: Taille des silhouettes d'avion, en pixels (constante quel que soit le
 #: zoom). Volontairement petite : en vue monde, 8 000 appareils se recouvrent
-#: des que l'icone depasse une dizaine de pixels, et la carte devient une
-#: tache illisible. Le detail se lit en zoomant.
+#: dès que l'icône dépasse une dizaine de pixels, et la carte devient une
+#: tache illisible. Le détail se lit en zoomant.
 AIRCRAFT_ICON_SIZE = 9
+
+#: Valeurs qui signalent une absence de donnée. La fiche détaillée ne
+#: consacre pas une ligne à dire qu'elle ne sait pas : elle omet la ligne.
+UNKNOWN = {"-", "Inconnu"}
 
 
 # ---------------------------------------------------------------------------
-# Theme (cockpit / HUD)
+# Thème (cockpit / HUD)
 # ---------------------------------------------------------------------------
 THEME_CSS = """
 /* Typographie : deux familles seulement, choisies pour la lisibilite plutot
@@ -118,7 +143,7 @@ THEME_CSS = """
 
 :root{
   --cyan:#22d3ee; --blue:#3b82f6; --green:#34d399; --amber:#fbbf24; --red:#fb7185;
-  /* Contraste releve : l'ancien gris (#6b7ea6) tombait sous le seuil de
+  /* Contraste relevé : l'ancien gris (#6b7ea6) tombait sous le seuil de
      lisibilite WCAG sur fond sombre et donnait un rendu terne. */
   --text:#e6edf7; --muted:#9fb3d1; --dim:#7d93b5;
   --line:rgba(34,211,238,0.18);
@@ -215,6 +240,11 @@ h2{ font-size:1.02rem;} h3{ font-size:0.92rem;}
 hr{ border:none; height:1px; background:linear-gradient(90deg,transparent,var(--line),transparent); margin:1.1rem 0;}
 
 [data-testid="stSidebar"]{ background:linear-gradient(180deg,#060b16,#04070e); border-right:1px solid var(--line);}
+/* Streamlit anime le repli de la barre laterale sur 300 ms. Si un
+   rafraichissement automatique tombe pendant cette transition, l'ancien et le
+   nouveau contenu se superposent et le texte parait dedouble. Un fond opaque
+   sur le conteneur interne masque la couche du dessous pendant l'animation. */
+[data-testid="stSidebar"] > div:first-child{ background:#060b16;}
 [data-testid="stSidebar"] *{ color:var(--text);}
 
 [data-testid="stDataFrame"]{ border:1px solid var(--line); border-radius:12px; overflow:hidden;
@@ -248,16 +278,23 @@ def inject_theme() -> None:
 
 
 @st.cache_resource(show_spinner=False)
-def aircraft_icon() -> dict:
-    """Silhouette d'avion, generee puis embarquee en data URI.
+def aircraft_icon() -> tuple[str, dict]:
+    """Silhouette d'avion, générée puis embarquée en data URI.
 
-    Dessinee a la volee plutot que chargee depuis un fichier ou un CDN : pas
-    d'actif binaire a versionner, et rien a telecharger au rendu (une regle
-    de securite stricte cote Streamlit Cloud bloquerait un hote externe).
+    Dessinée à la volée plutôt que chargée depuis un fichier ou un CDN : pas
+    d'actif binaire à versionner, et rien à télécharger au rendu (une règle
+    de sécurité stricte côté Streamlit Cloud bloquerait un hôte externe).
 
-    L'icone est peinte en blanc et declaree `mask: true` : deck.gl s'en sert
+    L'icône est peinte en blanc et déclarée `mask: true` : deck.gl s'en sert
     alors comme pochoir et applique la couleur de chaque appareil, ce qui
-    evite de generer une icone par phase de vol.
+    évite de générer une icône par phase de vol.
+
+    Renvoie un PLANCHIER (`iconAtlas` + `iconMapping`) et non une icône par
+    appareil. La nuance est tout sauf cosmétique : attachée à chaque ligne,
+    l'image encodée - 1 130 caractères - repartait 13 000 fois à chaque
+    rechargement, soit 15 Mo de JSON pour redessiner la même silhouette.
+    Déclarée une seule fois au niveau du calque, chaque appareil ne
+    transporte plus qu'un nom.
     """
     import base64
     from io import BytesIO
@@ -267,7 +304,7 @@ def aircraft_icon() -> dict:
     size = 128
     image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
-    # Nez vers le HAUT : deck.gl considere 0 degre comme pointant vers le nord.
+    # Nez vers le HAUT : deck.gl considère 0 degré comme pointant vers le nord.
     draw.polygon(
         [
             (64, 5),
@@ -295,25 +332,34 @@ def aircraft_icon() -> dict:
     buffer = BytesIO()
     image.save(buffer, format="PNG")
     encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
-    return {
-        "url": f"data:image/png;base64,{encoded}",
-        "width": size,
-        "height": size,
-        "anchorX": size // 2,
-        "anchorY": size // 2,
-        "mask": True,
+    atlas = f"data:image/png;base64,{encoded}"
+    mapping = {
+        ICON_NAME: {
+            "x": 0,
+            "y": 0,
+            "width": size,
+            "height": size,
+            "anchorX": size // 2,
+            "anchorY": size // 2,
+            "mask": True,
+        }
     }
+    return atlas, mapping
 
 
-AIRCRAFT_ICON = aircraft_icon()
+#: Nom de l'unique icône du planchier. Chaque appareil ne transporte que ce
+#: nom : le PNG, lui, n'est transmis qu'une fois (voir `aircraft_icon`).
+ICON_NAME = "avion"
+
+AIRCRAFT_ICON_ATLAS, AIRCRAFT_ICON_MAPPING = aircraft_icon()
 
 
 def style_fig(fig, height: int | None = None):
-    """Applique le theme du tableau de bord a une figure Plotly.
+    """Applique le thème du tableau de bord à une figure Plotly.
 
-    Choix de lisibilite plutot que d'effet : grille discrete (elle guide sans
-    concurrencer la donnee), axes en Inter, valeurs en JetBrains Mono avec
-    chiffres tabulaires, et infobulle contrastee.
+    Choix de lisibilité plutôt que d'effet : grille discrète (elle guide sans
+    concurrencer la donnée), axes en Inter, valeurs en JetBrains Mono avec
+    chiffres tabulaires, et infobulle contrastée.
     """
     axis = {
         "gridcolor": "rgba(90,140,200,0.10)",
@@ -341,10 +387,10 @@ def style_fig(fig, height: int | None = None):
             "font": {"family": "JetBrains Mono, monospace", "size": 12, "color": "#eaf9ff"},
         },
     )
-    # Le titre n'est style QUE s'il existe. Toucher au titre d'une figure qui
-    # n'en a pas (via `title_font` ou `title={"text": None}`) fait afficher a
-    # Plotly le litteral "undefined" au-dessus du graphe : cote JavaScript,
-    # l'absence de texte est serialisee en `undefined` puis rendue telle quelle.
+    # Le titre n'est stylé QUE s'il existe. Toucher au titre d'une figure qui
+    # n'en a pas (via `title_font` ou `title={"text": None}`) fait afficher à
+    # Plotly le littéral "undefined" au-dessus du graphe : côté JavaScript,
+    # l'absence de texte est sérialisée en `undefined` puis rendue telle quelle.
     if fig.layout.title.text:
         fig.update_layout(
             title_font={"family": "Inter, sans-serif", "size": 13, "color": "#dff6fb"}
@@ -356,22 +402,22 @@ def style_fig(fig, height: int | None = None):
 
 
 # ---------------------------------------------------------------------------
-# Acces aux donnees
+# Accès aux données
 # ---------------------------------------------------------------------------
 @st.cache_data(ttl=90, show_spinner=False)
 def load(sql: str) -> pd.DataFrame:
-    """Execute une requete sur l'entrepot en lecture seule.
+    """Exécute une requête sur l'entrepôt en lecture seule.
 
-    Lecture seule volontairement : DuckDB n'autorise qu'un seul ecrivain,
+    Lecture seule volontairement : DuckDB n'autorise qu'un seul écrivain,
     et le tableau de bord ne doit jamais bloquer un run dbt en cours.
 
-    Cache de 90 s : la donnee amont ne change qu'a chaque collecte (30 min au
-    mieux), donc interroger DuckDB a chaque interaction de widget etait du
-    gaspillage pur - c'etait la principale source de latence percue.
+    Cache de 90 s : la donnée amont ne change qu'à chaque collecte (30 min au
+    mieux), donc interroger DuckDB à chaque interaction de widget était du
+    gaspillage pur - c'était la principale source de latence perçue.
 
     Le fuseau est force en UTC : DuckDB rend sinon les TIMESTAMPTZ dans le
     fuseau de la machine, et la page afficherait des heures locales sous
-    des libelles "UTC".
+    des libellés "UTC".
     """
     with duckdb.connect(str(SETTINGS.resolved_duckdb_path), read_only=True) as connection:
         connection.execute(f"SET TimeZone = '{WAREHOUSE_TIMEZONE}'")
@@ -381,19 +427,19 @@ def load(sql: str) -> pd.DataFrame:
 def warehouse_is_ready() -> tuple[bool, str]:
     path = SETTINGS.resolved_duckdb_path
     if not path.exists():
-        return False, f"Entrepot introuvable : {path}"
+        return False, f"Entrepôt introuvable : {path}"
     try:
         load("select 1 from marts.fct_aircraft_positions limit 1")
     except duckdb.IOException:
-        return False, "Entrepot verrouille par une ecriture en cours. Reessayer dans un instant."
+        return False, "Entrepôt verrouillé par une écriture en cours. Réessayer dans un instant."
     except duckdb.CatalogException:
         return False, "Les tables `marts` n'existent pas encore."
     return True, ""
 
 
-#: Sur R2, le collecteur n'ecrit pas dans git : Streamlit ne se redeploie
-#: donc pas tout seul. Le dashboard reconstruit l'entrepot depuis R2 a
-#: intervalle regulier (le `bucket` temporel casse le cache).
+#: Sur R2, le collecteur n'écrit pas dans git : Streamlit ne se redéploie
+#: donc pas tout seul. Le dashboard reconstruit l'entrepôt depuis R2 à
+#: intervalle régulier (le `bucket` temporel casse le cache).
 REBUILD_INTERVAL_SECONDS = 600
 
 
@@ -403,12 +449,12 @@ def _needs_rebuild() -> bool:
     duckdb_path = SETTINGS.resolved_duckdb_path
     if SETTINGS.uses_r2:
         # Lac distant : on ne peut pas se fier aux fichiers locaux. On
-        # reconstruit si l'entrepot est absent ou plus vieux que l'intervalle.
+        # reconstruit si l'entrepôt est absent ou plus vieux que l'intervalle.
         if not duckdb_path.exists():
             return True
         return (time.time() - duckdb_path.stat().st_mtime) > REBUILD_INTERVAL_SECONDS
 
-    # Lac local : reconstruire seulement si un fichier source est plus recent.
+    # Lac local : reconstruire seulement si un fichier source est plus récent.
     states = sorted(SETTINGS.states_dir.rglob("*.parquet"))
     if not states:
         return False
@@ -416,16 +462,16 @@ def _needs_rebuild() -> bool:
     return (not duckdb_path.exists()) or duckdb_path.stat().st_mtime < newest
 
 
-@st.cache_resource(show_spinner="Construction de l'entrepot a partir du lac de donnees...")
+@st.cache_resource(show_spinner="Construction de l'entrepôt à partir du lac de données...")
 def ensure_warehouse_built(bucket: int) -> None:
-    """Reconstruit les marts a partir du lac (local ou R2) si necessaire.
+    """Reconstruit les marts à partir du lac (local ou R2) si nécessaire.
 
     `bucket` est un compteur temporel : quand il change (toutes les
     REBUILD_INTERVAL_SECONDS), st.cache_resource rejoue la fonction, ce qui
-    permet au dashboard R2 de capter les nouvelles donnees sans redeploiement.
-    Il fait partie de la cle de cache - ne pas le prefixer d'un underscore.
+    permet au dashboard R2 de capter les nouvelles données sans redéploiement.
+    Il fait partie de la clé de cache - ne pas le préfixer d'un underscore.
     """
-    _ = bucket  # sert uniquement de cle de cache
+    _ = bucket  # sert uniquement de clé de cache
     import os
     import subprocess
     import sys
@@ -454,14 +500,14 @@ def ensure_warehouse_built(bucket: int) -> None:
 
 
 # ---------------------------------------------------------------------------
-# En-tete et commandes
+# En-tête et commandes
 # ---------------------------------------------------------------------------
 def display_region() -> str:
-    """Zone du dernier releve, lue dans la donnee plutot que dans la config.
+    """Zone du dernier relevé, lue dans la donnée plutôt que dans la config.
 
-    Le collecteur peut changer de zone ; le header doit refleter ce qui a
-    reellement ete collecte, pas un parametre. Repli sur la config si
-    l'entrepot n'est pas encore lisible.
+    Le collecteur peut changer de zone ; le header doit refléter ce qui a
+    réellement ete collecte, pas un paramètre. Repli sur la config si
+    l'entrepôt n'est pas encore lisible.
     """
     try:
         df = load(
@@ -493,17 +539,17 @@ st.markdown(
 with st.sidebar:
     st.header("Console")
     auto_refresh = st.toggle(
-        "Rafraichissement auto",
+        "Rafraîchissement auto",
         value=True,
         help=(
-            "Recharge la page periodiquement. Le pipeline etant batch, de "
-            "nouvelles donnees n'apparaissent qu'apres une execution planifiee."
+            "Recharge la page périodiquement. Le pipeline étant batch, de "
+            "nouvelles données n'apparaissent qu'après une exécution planifiée."
         ),
     )
-    # Deux familles d'intervalles : les courts (15 s a 5 min) servent au
-    # developpement et a la surveillance rapprochee ; les longs (30 min a 24 h)
-    # correspondent a la cadence reelle de la collecte, au-dela de laquelle
-    # recharger plus souvent n'apporte aucune donnee nouvelle.
+    # Deux familles d'intervalles : les courts (15 s à 5 min) servent au
+    # développement et à la surveillance rapprochée ; les longs (30 min à 24 h)
+    # correspondent à la cadence réelle de la collecte, au-delà de laquelle
+    # recharger plus souvent n'apporte aucune donnée nouvelle.
     interval_choices = {
         "15 s": 15,
         "30 s": 30,
@@ -522,43 +568,331 @@ with st.sidebar:
         disabled=not auto_refresh,
         help=(
             "Cadence de rechargement de la page. La collecte, elle, tourne "
-            "toutes les 30 min : au-dela, aucune donnee nouvelle n'arrive."
+            "toutes les 30 min : au-delà, aucune donnée nouvelle n'arrive."
         ),
     )
     interval_seconds = interval_choices[interval_label]
 
-    if st.button("Recharger maintenant", use_container_width=True):
+    if st.button("Recharger maintenant", width="stretch"):
         st.cache_data.clear()
         st.rerun()
 
     st.divider()
     st.caption(
-        f"Collecte planifiee toutes les {SCHEDULE_MINUTES} min "
+        f"Collecte planifiée toutes les {SCHEDULE_MINUTES} min "
         "(GitHub Actions en production, Dagster en local)."
     )
 
-# Construction INITIALE, indispensable avant la verification d'etat qui suit :
-# sur un environnement neuf (Streamlit Cloud), l'entrepot n'existe pas encore
-# et la page s'arreterait avant meme d'avoir tente de le batir. Le
-# rafraichissement periodique, lui, se fait dans le fragment `render()`.
-# `st.cache_resource` rend ce second appel gratuit tant que le creneau de
-# reconstruction n'a pas change.
+# Construction INITIALE, indispensable avant la vérification d'état qui suit :
+# sur un environnement neuf (Streamlit Cloud), l'entrepôt n'existe pas encore
+# et la page s'arrêterait avant même d'avoir tenté de le bâtir. Le
+# rafraîchissement périodique, lui, se fait dans le fragment `render()`.
+# `st.cache_resource` rend ce second appel gratuit tant que le créneau de
+# reconstruction n'a pas changé.
 try:
     import time as _time
 
     ensure_warehouse_built(int(_time.time() // REBUILD_INTERVAL_SECONDS))
-except Exception as exc:  # noqa: BLE001 - degradation douce, pas de trace
-    st.warning(f"Entrepot pas encore disponible : {exc}")
+except Exception as exc:  # noqa: BLE001 - dégradation douce, pas de trace
+    st.warning(f"Entrepôt pas encore disponible : {exc}")
 
 ready, message = warehouse_is_ready()
 if not ready:
     st.warning(message)
     st.info(
-        "En attente de la premiere collecte. Sur le deploiement public, le "
-        "workflow *Collecte planifiee* remplit le lac dans les 30 minutes ; "
-        "on peut aussi le declencher manuellement depuis l'onglet Actions.",
+        "En attente de la première collecte. Sur le déploiement public, le "
+        "workflow *Collecte planifiée* remplit le lac dans les 30 minutes ; "
+        "on peut aussi le déclencher manuellement depuis l'onglet Actions.",
     )
     st.stop()
+
+# ---------------------------------------------------------------------------
+# Filtres interactifs
+# ---------------------------------------------------------------------------
+#: Libellés lisibles des dimensions filtrables, affichés dans le bandeau.
+FILTER_LABELS = {
+    "flight_phase": "Phase",
+    "manufacturer_group": "Constructeur",
+    "origin_country": "Pays",
+    "airline_name": "Compagnie",
+}
+
+
+def active_filters() -> dict[str, str]:
+    """Filtres en cours, conserves entre deux rendus du fragment.
+
+    Passer par `session_state` est indispensable : le fragment se rejoue tout
+    seul (`run_every`), et l'événement de sélection d'un graphe est vide lors
+    de ces rejeux automatiques. Sans état persistant, tout filtre disparaîtrait
+    à la minute suivante.
+    """
+    return st.session_state.setdefault("filters", {})
+
+
+def render_filter_panel() -> None:
+    """Panneau de filtres, dans la barre latérale.
+
+    Pourquoi des listes déroulantes plutôt qu'un clic direct sur les graphes :
+    `st.plotly_chart(on_select=...)` ne reçoit d'événement que des traces que
+    Plotly sait rendre sélectionnables (nuages, barres via lasso ou rectangle).
+    Un camembert n'en fait pas partie - le clic n'émet rien, quel que soit le
+    `selection_mode`. Des widgets natifs sont donc le seul moyen fiable, et ils
+    ont l'avantage de montrer d'emblée les valeurs disponibles au lieu de
+    laisser deviner que le graphe est cliquable.
+    """
+    with st.sidebar:
+        st.divider()
+        st.header("Filtres")
+
+        options = load(
+            """
+            select
+                list_sort(list_distinct(list(flight_phase)))          as phases,
+                list_sort(list_distinct(list(origin_country)))        as pays
+            from marts.fct_aircraft_positions
+            where snapshot_at = (select max(snapshot_at) from marts.fct_aircraft_positions)
+            """
+        ).iloc[0]
+        makers = load(
+            "select distinct manufacturer_group from marts.dim_aircraft "
+            "where manufacturer_group is not null order by 1"
+        )["manufacturer_group"].tolist()
+        airlines = load(
+            "select airline_name, sum(distinct_aircraft) n "
+            "from marts.fct_airline_airport_activity where airline_name is not null "
+            "group by 1 order by n desc limit 40"
+        )["airline_name"].tolist()
+
+        filters = active_filters()
+        choices = {
+            "flight_phase": list(options["phases"]),
+            "manufacturer_group": makers,
+            "origin_country": list(options["pays"]),
+            "airline_name": airlines,
+        }
+
+        for dimension, values in choices.items():
+            values = [v for v in values if v is not None]
+            current = filters.get(dimension)
+            index = values.index(current) + 1 if current in values else 0
+            chosen = st.selectbox(
+                FILTER_LABELS[dimension],
+                options=["(tous)", *values],
+                index=index,
+                key=f"filter_{dimension}",
+                format_func=phase_label,
+            )
+            if chosen == "(tous)":
+                filters.pop(dimension, None)
+            else:
+                filters[dimension] = chosen
+
+        if filters and st.button("Réinitialiser les filtres", width="stretch"):
+            for dimension in list(choices):
+                st.session_state[f"filter_{dimension}"] = "(tous)"
+            st.session_state["filters"] = {}
+            st.rerun()
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def aircraft_photo(icao24: str) -> dict | None:
+    """Photo de l'appareil, mise en cache 24 h.
+
+    Une photographie ne change pas d'un jour à l'autre : un cache long évite
+    de solliciter Planespotters à chaque clic, et garde la fiche instantanée
+    quand on revient sur le même appareil.
+    """
+    photo = fetch_photo(icao24)
+    return None if photo is None else photo.__dict__
+
+
+def selection_scope(positions: pd.DataFrame) -> str:
+    """Empreinte du contenu affiché sur la carte.
+
+    Sert de clé au composant. Streamlit mémorise une sélection comme un RANG
+    dans le tableau transmis, pas comme un identifiant d'aéronef : dès que ce
+    tableau change - nouveau relevé, ou filtre modifié - le même rang
+    désignerait un autre appareil, et la fiche afficherait tranquillement les
+    informations d'un avion que personne n'a cliqué. Deux contenus différents
+    donnent donc deux composants distincts, et la sélection est remise à zéro
+    plutôt que faussée.
+    """
+    snapshot = positions["snapshot_at"].iloc[0]
+    return f"{snapshot:%Y%m%d%H%M%S}_{len(positions)}"
+
+
+def _picked_aircraft(selection) -> dict | None:
+    """Extrait l'appareil clique d'un événement de sélection deck.gl."""
+    try:
+        objects = selection.selection["objects"]
+    except (AttributeError, KeyError, TypeError):
+        return None
+    for rows in objects.values():
+        if rows:
+            return rows[0]
+    return None
+
+
+def render_aircraft_card(selection, positions: pd.DataFrame) -> None:
+    """Fiche détaillée de l'appareil sélectionné sur la carte.
+
+    Rien ne s'affiche tant qu'aucun appareil n'est cliqué : la fiche est un
+    approfondissement, pas un élément permanent qui occuperait la page.
+
+    Streamlit conserve l'objet tel qu'il était AU MOMENT du clic. On le
+    rafraîchit donc depuis le dernier relevé : sans cela, altitude et vitesse
+    resteraient figées à la valeur du clic alors que la page, elle, continue
+    de se recharger.
+    """
+    aircraft = _picked_aircraft(selection)
+    if not aircraft:
+        return
+
+    current = positions.loc[positions["aircraft_icao24"] == aircraft.get("aircraft_icao24")]
+    if current.empty:
+        # Sélection devenue caduque : le calque ne transporte que de quoi
+        # dessiner et survoler, donc sans la ligne correspondante il n'y a
+        # rien d'honnête à afficher.
+        return
+    aircraft = current.iloc[0].to_dict()
+
+    # Une colonne vide devient NaN en sortie de pandas, et NaN est "vrai" au
+    # sens booléen : sans cette normalisation, `airline or operator` renverrait
+    # le NaN et la fiche afficherait "nan" comme nom de compagnie.
+    aircraft = {
+        key: None if isinstance(val, float) and pd.isna(val) else val
+        for key, val in aircraft.items()
+    }
+
+    def value(key: str, fallback: str = "-") -> str:
+        raw = aircraft.get(key)
+        if raw is None or (isinstance(raw, float) and pd.isna(raw)) or raw == "":
+            return fallback
+        return str(raw)
+
+    def number(key: str, unit: str, decimals: int = 0) -> str:
+        raw = aircraft.get(key)
+        if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+            # Une valeur absente s'affiche comme absente : écrire "0 ft" pour
+            # une altitude non transmise inventerait une donnée.
+            return "-"
+        # Le degré se colle au nombre ; les autres unités s'en séparent.
+        espace = "" if unit.startswith("°") else " "
+        return f"{float(raw):,.{decimals}f}{espace}{unit}".replace(",", " ")
+
+    def year() -> str:
+        raw = aircraft.get("built_year")
+        if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+            return "-"
+        # La jointure avec les positions rend la colonne flottante dès qu'un
+        # appareil n'a pas d'année connue : sans conversion, 2011 s'afficherait
+        # "2011.0", et un séparateur de milliers en ferait "2 011".
+        return str(int(raw))
+
+    icao24 = value("aircraft_icao24", "")
+    operator = aircraft.get("operator")
+    airline = aircraft.get("airline_name")
+    military = looks_military(operator, airline)
+
+    st.divider()
+    photo_column, info_column = st.columns([1, 2])
+
+    with photo_column:
+        photo = aircraft_photo(icao24) if icao24 else None
+        if photo:
+            st.image(photo["thumbnail_url"], width="stretch")
+            credit = photo.get("photographer") or "photographe inconnu"
+            link = photo.get("page_url")
+            # Le crédit n'est pas optionnel : les photos ont un auteur.
+            st.caption(
+                f"Photo : {credit} - [Planespotters]({link})"
+                if link
+                else f"Photo : {credit} (Planespotters)"
+            )
+        else:
+            st.caption(
+                "Aucune photo de cet appareil dans la base Planespotters. "
+                "La couverture est bonne pour les avions de ligne, plus rare "
+                "pour l'aviation d'affaires et les appareils d'État."
+            )
+
+    with info_column:
+        # Indicatif et nom d'exploitant viennent des sources externes et sont
+        # insérés dans du HTML brut : ils sont échappés, faute de quoi une
+        # valeur mal formée - ou malveillante - s'exécuterait dans la page.
+        title = html.escape(value("callsign", "(sans indicatif)"))
+        subtitle = html.escape(str(airline or operator or "Exploitant inconnu"))
+        badge = (
+            "<span style='color:#fbbf24;border:1px solid #fbbf24;border-radius:12px;"
+            "padding:2px 9px;font-size:.7rem;margin-left:10px'>ÉTAT / MILITAIRE ?</span>"
+            if military
+            else ""
+        )
+        st.markdown(
+            f"<div style='font-family:JetBrains Mono,monospace;font-size:1.5rem;"
+            f"color:#eaf9ff'>{title}{badge}</div>"
+            f"<div style='color:#9fb3d1;margin-bottom:.6rem'>{subtitle}</div>",
+            unsafe_allow_html=True,
+        )
+
+        left, middle, right = st.columns(3)
+        left.metric("Immatriculation", value("registration"))
+        middle.metric("Type", value("aircraft_type"))
+        right.metric("Année", year())
+
+        left, middle, right = st.columns(3)
+        left.metric("Altitude", number("barometric_altitude_ft", "ft"))
+        middle.metric("Vitesse", number("ground_speed_kt", "kt"))
+        right.metric("Cap", number("heading_deg", "°"))
+
+        details = {
+            # `manufacturer` est absent pour environ quatre appareils sur dix ;
+            # le groupe constructeur, lui, est toujours renseigné.
+            "Constructeur": value("manufacturer", "") or value("manufacturer_group"),
+            "Modèle": value("model"),
+            "Exploitant": operator or "-",
+            "Pays d'immatriculation": value("origin_country"),
+            "Phase de vol": phase_label(value("flight_phase")),
+            "Adresse OACI 24 bits": icao24 or "-",
+        }
+        st.markdown("\n".join(f"- **{k}** : {v}" for k, v in details.items() if v not in UNKNOWN))
+        if military:
+            st.caption(
+                "L'étiquette État / militaire est une heuristique fondée sur le "
+                "nom de l'exploitant : elle peut se tromper dans les deux sens."
+            )
+
+
+def apply_filters(frame: pd.DataFrame) -> pd.DataFrame:
+    """Restreint un tableau de positions aux filtres actifs."""
+    for dimension, value in active_filters().items():
+        if dimension in frame.columns:
+            frame = frame[frame[dimension] == value]
+    return frame
+
+
+def render_filter_bar() -> None:
+    """Rappelle les filtres actifs et permet de les lever."""
+    filters = active_filters()
+    if not filters:
+        st.caption(
+            "Astuce : les filtres de la barre latérale (phase, constructeur, "
+            "pays, compagnie) restreignent la carte et les indicateurs du "
+            "dernier relevé."
+        )
+        return
+
+    resume = " · ".join(
+        f"{FILTER_LABELS.get(k, k)} : **{phase_label(v)}**" for k, v in filters.items()
+    )
+    st.markdown(f"Filtres actifs : {resume}")
+
+
+# Le panneau de filtres interroge l'entrepôt pour proposer les valeurs
+# existantes : il ne peut donc être construit qu'une fois celui-ci prêt.
+# Il vit hors du fragment, dans le corps du script, pour qu'un changement de
+# filtre rejoue la page entière et non le seul bloc de rendu.
+render_filter_panel()
 
 
 # ---------------------------------------------------------------------------
@@ -573,33 +907,33 @@ def status_chip(level: str, text: str) -> None:
 
 @st.fragment(run_every=interval_seconds if auto_refresh else None)
 def render() -> None:
-    """Corps du tableau de bord, reexecute a chaque rafraichissement.
+    """Corps du tableau de bord, réexécute à chaque rafraîchissement.
 
     Isole dans un fragment : Streamlit ne rejoue que cette fonction, sans
-    reinitialiser les commandes de la barre laterale.
+    réinitialiser les commandes de la barre latérale.
 
-    C'est aussi ICI que l'entrepot est rafraichi, et non dans le corps du
+    C'est aussi ICI que l'entrepôt est rafraîchi, et non dans le corps du
     script. Un `run_every` ne rejoue QUE le fragment : place au niveau du
     script, la reconstruction n'aurait lieu qu'au chargement initial de la
-    page, et le tableau de bord afficherait indefiniment des donnees figees
+    page, et le tableau de bord afficherait indéfiniment des données figées
     pendant que le collecteur, lui, continue d'alimenter le lac.
     """
     import time as _time
 
     try:
         ensure_warehouse_built(int(_time.time() // REBUILD_INTERVAL_SECONDS))
-    except Exception as exc:  # noqa: BLE001 - une reconstruction ratee ne doit
-        # pas vider la page : on garde l'affichage precedent et on le signale.
-        st.warning(f"Rafraichissement de l'entrepot impossible : {exc}")
+    except Exception as exc:  # noqa: BLE001 - une reconstruction ratée ne doit
+        # pas vider la page : on garde l'affichage précédent et on le signale.
+        st.warning(f"Rafraîchissement de l'entrepôt impossible : {exc}")
 
     try:
         _render_body()
     except duckdb.IOException:
-        st.info("Mise a jour de l'entrepot en cours, affichage dans un instant.")
+        st.info("Mise à jour de l'entrepôt en cours, affichage dans un instant.")
 
 
 def _render_body() -> None:
-    # -- Fraicheur ---------------------------------------------------------
+    # -- Fraîcheur ---------------------------------------------------------
     overview = load(
         """
         select
@@ -620,42 +954,42 @@ def _render_body() -> None:
     age_minutes = (datetime.now(UTC) - last_seen.to_pydatetime()).total_seconds() / 60
     span_hours = (overview["fin"] - overview["debut"]).total_seconds() / 3600
 
-    # Seuils calibres sur le comportement REEL du cron GitHub Actions, pas sur
-    # sa cadence theorique : mesure faite sur ce depot, les ecarts entre deux
-    # collectes vont de 50 min a plus de 3 h (GitHub execute les crons "au
-    # mieux"). Des seuils calques sur les 30 min nominales afficheraient une
-    # alerte en permanence, ce qui reviendrait a n'alerter sur rien.
+    # Seuils calibrés sur le comportement RÉEL du cron GitHub Actions, pas sur
+    # sa cadence théorique : mesure faite sur ce dépôt, les écarts entre deux
+    # collectés vont de 50 min à plus de 3 h (GitHub exécute les crons "au
+    # mieux"). Des seuils calqués sur les 30 min nominales afficheraient une
+    # alerte en permanence, ce qui reviendrait à n'alerter sur rien.
     if age_minutes <= NOMINAL_MAX_MINUTES:
         status_chip(
             "ok",
-            f"SIGNAL NOMINAL // dernier releve il y a {age_minutes:.0f} min "
+            f"SIGNAL NOMINAL // dernier relevé il y a {age_minutes:.0f} min "
             f"({last_seen:%H:%M:%S} UTC)",
         )
     elif age_minutes <= DEGRADED_MAX_MINUTES:
         status_chip(
             "warn",
-            f"COLLECTE RETARDEE // dernier releve il y a {age_minutes:.0f} min "
-            "(le cron GitHub est frequemment differe)",
+            f"COLLECTE RETARDÉE // dernier relevé il y a {age_minutes:.0f} min "
+            "(le cron GitHub est fréquemment différé)",
         )
     else:
         status_chip(
             "err",
-            f"SIGNAL PERDU // aucune donnee depuis {age_minutes / 60:.1f} h - "
-            "verifier le workflow Collecte planifiee (onglet Actions)",
+            f"SIGNAL PERDU // aucune donnée depuis {age_minutes / 60:.1f} h - "
+            "vérifier le workflow Collecte planifiée (onglet Actions)",
         )
 
-    # -- Indicateurs cles --------------------------------------------------
+    # -- Indicateurs clés --------------------------------------------------
     columns = st.columns(5)
-    columns[0].metric("Positions collectees", f"{int(overview['positions']):,}".replace(",", " "))
-    columns[1].metric("Aeronefs distincts", f"{int(overview['aeronefs']):,}".replace(",", " "))
+    columns[0].metric("Positions", f"{int(overview['positions']):,}".replace(",", " "))
+    columns[1].metric("Aéronefs", f"{int(overview['aeronefs']):,}".replace(",", " "))
     columns[2].metric("Snapshots", f"{int(overview['snapshots']):,}".replace(",", " "))
-    columns[3].metric("Aeroports actifs", int(airports_active))
+    columns[3].metric("Aéroports", int(airports_active))
     columns[4].metric("Historique", f"{span_hours:.1f} h")
 
     st.divider()
 
-    # -- Serie par snapshot ------------------------------------------------
-    st.subheader("Trafic releve par releve")
+    # -- Série par snapshot ------------------------------------------------
+    st.subheader("Trafic relevé par relevé")
 
     per_snapshot = load(
         """
@@ -672,17 +1006,25 @@ def _render_body() -> None:
 
     if len(per_snapshot) < 2:
         st.info(
-            "Un seul releve pour l'instant. La courbe apparait des le "
-            f"deuxieme, soit environ {SCHEDULE_MINUTES} min apres le premier.",
+            "Un seul relevé pour l'instant. La courbe apparaît dès le "
+            f"deuxième, soit environ {SCHEDULE_MINUTES} min après le premier.",
         )
     else:
+        # px.line nomme les traces d'après les COLONNES : `labels` ne les
+        # renomme pas. On renomme donc les colonnes, sur une copie qui ne
+        # sert qu'à l'affichage.
+        courbe = per_snapshot.rename(columns={"aeronefs": "tous appareils", "au_sol": "au sol"})
         series = px.line(
-            per_snapshot,
+            courbe,
             x="snapshot_at",
-            y=["aeronefs", "au_sol"],
+            y=["tous appareils", "au sol"],
             markers=True,
-            labels={"snapshot_at": "Instant du releve (UTC)", "value": "Aeronefs", "variable": ""},
-            color_discrete_map={"aeronefs": "#00e5ff", "au_sol": "#3b5a8a"},
+            labels={
+                "snapshot_at": "Instant du relevé (UTC)",
+                "value": "Aéronefs",
+                "variable": "",
+            },
+            color_discrete_map={"tous appareils": "#00e5ff", "au sol": "#3b5a8a"},
         )
         series.update_traces(
             line={"width": 2.6},
@@ -690,30 +1032,40 @@ def _render_body() -> None:
         )
         style_fig(series, height=340)
         series.update_layout(legend={"orientation": "h", "y": 1.14, "x": 0}, hovermode="x unified")
-        # Pas de "spike" vertical : `hovermode="x unified"` designe deja le
-        # releve survole et en affiche les valeurs. Une barre en plus est
+        # Pas de "spike" vertical : `hovermode="x unified"` désigne déjà le
+        # relevé survolé et en affiche les valeurs. Une barre en plus est
         # redondante, et Plotly la dessine large et opaque.
         series.update_xaxes(showspikes=False)
-        st.plotly_chart(series, use_container_width=True)
+        st.plotly_chart(series, width="stretch")
         st.caption(
-            f"{len(per_snapshot)} releves. Chaque point est une execution du "
-            "pipeline : la granularite reelle de la collecte."
+            f"{len(per_snapshot)} relevés. Chaque point est une exécution du "
+            "pipeline : la granularité réelle de la collecte."
         )
 
     st.divider()
 
-    # -- Carte du dernier releve -------------------------------------------
-    st.subheader("Radar // dernier releve")
+    # -- Carte du dernier relevé -------------------------------------------
+    st.subheader("Radar // dernier relevé")
 
-    latest = load(
+    # Jointure avec la dimension aéronef : elle apporte le constructeur et la
+    # compagnie, qui servent de dimensions de filtrage sur la carte.
+    latest_all = load(
         """
         select
-            latitude, longitude, callsign, origin_country, heading_deg,
-            barometric_altitude_ft, ground_speed_kt, flight_phase, aircraft_icao24
-        from marts.fct_aircraft_positions
-        where snapshot_at = (select max(snapshot_at) from marts.fct_aircraft_positions)
+            p.latitude, p.longitude, p.callsign, p.origin_country, p.heading_deg,
+            p.barometric_altitude_ft, p.ground_speed_kt, p.flight_phase,
+            p.aircraft_icao24, p.snapshot_at,
+            coalesce(a.manufacturer_group, 'Inconnu') as manufacturer_group,
+            a.airline_name, a.registration, a.aircraft_type, a.manufacturer,
+            a.model, a.operator, a.built_year, a.airline_country
+        from marts.fct_aircraft_positions p
+        left join marts.dim_aircraft a using (aircraft_icao24)
+        where p.snapshot_at = (select max(snapshot_at) from marts.fct_aircraft_positions)
         """
     )
+    latest = apply_filters(latest_all)
+
+    render_filter_bar()
 
     map_column, phase_column = st.columns([3, 1])
 
@@ -721,95 +1073,157 @@ def _render_body() -> None:
         if latest.empty:
             st.info("Aucune position sur le dernier snapshot.")
         else:
-            # Chaque appareil est dessine comme une silhouette d'avion orientee
-            # selon son cap reel : l'image donne alors les flux (couloirs
-            # transatlantiques, approches d'aeroport) qu'un simple point ne
+            # Chaque appareil est dessine comme une silhouette d'avion orientée
+            # selon son cap réel : l'image donne alors les flux (couloirs
+            # transatlantiques, approches d'aéroport) qu'un simple point ne
             # montre pas. La couleur reste la phase de vol.
             #
-            # deck.gl dessine sur GPU : les 8 000 aeronefs d'un releve mondial
-            # passent sans peine, la ou Plotly (rendu SVG) imposait un
-            # echantillonnage. On affiche donc la totalite du releve.
-            plotted = latest.copy()
-            plotted["angle"] = -plotted["heading_deg"].fillna(0)
-            plotted["colour"] = [PHASE_RGB.get(p, (150, 160, 180)) for p in plotted["flight_phase"]]
-            plotted["icon"] = [AIRCRAFT_ICON] * len(plotted)
-            plotted["callsign"] = plotted["callsign"].fillna("(sans indicatif)")
-            plotted["altitude_txt"] = plotted["barometric_altitude_ft"].map(
-                lambda v: "-" if pd.isna(v) else f"{v:,.0f} ft".replace(",", " ")
-            )
-            plotted["vitesse_txt"] = plotted["ground_speed_kt"].map(
-                lambda v: "-" if pd.isna(v) else f"{v:.0f} kt"
+            # deck.gl dessine sur GPU : les 8 000 aéronefs d'un relevé mondial
+            # passent sans peine, là où Plotly (rendu SVG) imposait un
+            # échantillonnage. On affiche donc la totalité du relevé.
+            # Le calque ne transporte QUE le strict nécessaire au rendu et à
+            # l'infobulle. Tout le reste - immatriculation, modèle, année... -
+            # est relu côté serveur dans `latest` au moment du clic : inutile
+            # d'expédier au navigateur, treize mille fois, des informations
+            # dont une seule ligne servira.
+            plotted = pd.DataFrame(
+                {
+                    "longitude": latest["longitude"],
+                    "latitude": latest["latitude"],
+                    "angle": -latest["heading_deg"].fillna(0),
+                    "colour": [PHASE_RGB.get(p, (150, 160, 180)) for p in latest["flight_phase"]],
+                    "icon": ICON_NAME,
+                    "callsign": latest["callsign"].fillna("(sans indicatif)"),
+                    "origin_country": latest["origin_country"],
+                    "flight_phase": latest["flight_phase"].map(phase_label),
+                    "aircraft_icao24": latest["aircraft_icao24"],
+                    "altitude_txt": latest["barometric_altitude_ft"].map(
+                        lambda v: "-" if pd.isna(v) else f"{v:,.0f} ft".replace(",", " ")
+                    ),
+                    "vitesse_txt": latest["ground_speed_kt"].map(
+                        lambda v: "-" if pd.isna(v) else f"{v:.0f} kt"
+                    ),
+                }
             )
 
-            # Cadrage automatique sur la donnee reelle plutot qu'un zoom fixe :
-            # la meme page reste lisible que la zone soit la France ou le monde.
+            # deck.gl reçoit le calque sous forme de JSON strict, analyse par le
+            # navigateur. Or une colonne vide en base devient un NaN pandas, que
+            # Python sérialise en littéral `NaN` - refusé par JSON.parse, ce qui
+            # ferait disparaître la carte entière. On repasse donc les colonnes
+            # facultatives en `null` avant l'envoi.
+            for column in ("callsign", "origin_country", "flight_phase", "aircraft_icao24"):
+                plotted[column] = (
+                    plotted[column].astype(object).where(plotted[column].notna(), None)
+                )
+
+            # Cadrage automatique sur la donnée réelle plutôt qu'un zoom fixe :
+            # la même page reste lisible que la zone soit la France ou le monde.
             lat_span = plotted["latitude"].max() - plotted["latitude"].min()
             lon_span = plotted["longitude"].max() - plotted["longitude"].min()
             span = max(lat_span, lon_span / 1.8, 1.0)
             zoom = max(1.0, min(6.5, 7.2 - math.log2(span)))
 
-            # Attention : pydeck transforme toute CHAINE de caracteres en
+            # Attention : pydeck transforme toute CHAÎNE de caractères en
             # accesseur de colonne. Passer `size_units="pixels"` produisait
             # `sizeUnits: @@=pixels`, soit "lis la colonne pixels" - colonne
-            # inexistante, d'ou un dimensionnement aberrant. Les unites en
-            # pixels etant deja le defaut de deck.gl, on ne les precise pas ;
-            # seules des valeurs NUMERIQUES sont passees ici.
+            # inexistante, d'où un dimensionnement aberrant. Les unités en
+            # pixels étant déjà le défaut de deck.gl, on ne les précise pas ;
+            # seules des valeurs NUMÉRIQUES sont passées ici.
             layer = pdk.Layer(
                 "IconLayer",
                 data=plotted,
                 get_icon="icon",
+                # `PdkString` marque une chaîne LITTÉRALE. Sans elle, pydeck
+                # applique sa règle habituelle - toute chaîne devient un
+                # accesseur de colonne - et émet `iconAtlas: @@=data:image/png...`,
+                # que deck.gl tente alors d'évaluer comme une expression. Même
+                # piège que `size_units="pixels"` en son temps.
+                icon_atlas=PdkString(AIRCRAFT_ICON_ATLAS),
+                icon_mapping=AIRCRAFT_ICON_MAPPING,
                 get_position=["longitude", "latitude"],
                 get_angle="angle",
                 get_color="colour",
+                # Identifiant FIXE. pydeck en génère un aléatoire à chaque
+                # construction ; la sélection étant rattachée à l'identifiant
+                # du calque, elle serait perdue à chaque rechargement de page.
+                id="aeronefs",
                 get_size=AIRCRAFT_ICON_SIZE,
                 size_min_pixels=5,
                 size_max_pixels=AIRCRAFT_ICON_SIZE,
                 opacity=0.85,
                 pickable=True,
+                # Surbrillance au survol, calculée sur le GPU : le retour est
+                # immédiat, sans aller-retour avec le serveur. On sait ce que
+                # l'on s'apprête à sélectionner avant de cliquer.
+                auto_highlight=True,
+                highlight_color=[255, 255, 255, 220],
             )
-            st.pydeck_chart(
-                pdk.Deck(
-                    layers=[layer],
-                    initial_view_state=pdk.ViewState(
-                        latitude=float(plotted["latitude"].median()),
-                        longitude=float(plotted["longitude"].median()),
-                        zoom=zoom,
-                    ),
-                    map_style=pdk.map_styles.CARTO_DARK,
-                    tooltip={
-                        "html": (
-                            "<b>{callsign}</b><br/>{origin_country}"
-                            "<br/>{altitude_txt} &middot; {vitesse_txt}"
-                            "<br/><span style='opacity:.7'>{flight_phase}</span>"
-                        ),
-                        "style": {
-                            "backgroundColor": "rgba(10,17,32,0.96)",
-                            "color": "#eaf9ff",
-                            "fontFamily": "Inter, sans-serif",
-                            "fontSize": "12px",
-                            "border": "1px solid #22d3ee",
-                            "borderRadius": "8px",
-                        },
-                    },
+            # `on_select` rend le calque cliquable : contrairement aux
+            # camemberts Plotly, deck.gl expose bien l'objet sélectionné.
+            deck = pdk.Deck(
+                layers=[layer],
+                initial_view_state=pdk.ViewState(
+                    latitude=float(plotted["latitude"].median()),
+                    longitude=float(plotted["longitude"].median()),
+                    zoom=zoom,
                 ),
+                map_style=pdk.map_styles.CARTO_DARK,
+                tooltip={
+                    "html": (
+                        "<b>{callsign}</b><br/>{origin_country}"
+                        "<br/>{altitude_txt} &middot; {vitesse_txt}"
+                        "<br/><span style='opacity:.7'>{flight_phase}</span>"
+                    ),
+                    "style": {
+                        "backgroundColor": "rgba(10,17,32,0.96)",
+                        "color": "#eaf9ff",
+                        "fontFamily": "Inter, sans-serif",
+                        "fontSize": "12px",
+                        "border": "1px solid #22d3ee",
+                        "borderRadius": "8px",
+                    },
+                },
+            )
+            # Tolérance de visee. Une silhouette fait neuf pixels : exiger le
+            # pixel exact rend le clic frustrant, surtout sur écran tactile ou
+            # au pave tactile. deck.gl cherche alors dans un rayon autour du
+            # curseur et retient l'appareil le plus proche.
+            deck.picking_radius = 8
+
+            selection = st.pydeck_chart(
+                deck,
                 height=560,
+                on_select="rerun",
+                selection_mode="single-object",
+                key=f"carte_{selection_scope(latest)}",
             )
             st.caption(
-                f"{len(plotted):,} aeronefs du dernier releve. ".replace(",", " ")
-                + "Chaque silhouette est orientee selon le cap reel de "
-                "l'appareil ; la couleur indique la phase de vol. "
-                "**Les zones vides ne sont pas des zones sans trafic** : le "
-                "reseau OpenSky repose sur des recepteurs benevoles, denses en "
-                "Europe et en Amerique du Nord, rares ailleurs. Les volumes ne "
-                "sont pas comparables d'une region a l'autre."
+                f"{len(plotted):,} aéronefs du dernier relevé. ".replace(",", " ")
+                + "Cliquer sur un appareil affiche sa fiche. Chaque silhouette "
+                "est orientée selon le cap réel ; la couleur indique la phase "
+                "de vol. **Les zones vides ne sont pas des zones sans trafic** : "
+                "le réseau OpenSky repose sur des récepteurs bénévoles, denses "
+                "en Europe et en Amérique du Nord, rares ailleurs. Les volumes "
+                "ne sont pas comparables d'une région à l'autre."
             )
+            render_aircraft_card(selection, latest)
 
     with phase_column:
         if not latest.empty:
-            phases = latest.groupby("flight_phase").size().reset_index(name="aeronefs")
+            # Le camembert se calculé sur les données NON filtrées par phase :
+            # sinon, cliquer sur "croisiere" ne laisserait qu'une seule part et
+            # l'on ne pourrait plus revenir en arriere depuis le graphe.
+            phase_source = latest_all.copy()
+            for dimension, value in active_filters().items():
+                if dimension != "flight_phase" and dimension in phase_source.columns:
+                    phase_source = phase_source[phase_source[dimension] == value]
+
+            phases = phase_source.groupby("flight_phase").size().reset_index(name="aeronefs")
+            phases["libelle"] = phases["flight_phase"].map(phase_label)
+            selected_phase = active_filters().get("flight_phase")
             donut = px.pie(
                 phases,
-                names="flight_phase",
+                names="libelle",
                 values="aeronefs",
                 hole=0.62,
                 color="flight_phase",
@@ -817,22 +1231,25 @@ def _render_body() -> None:
             )
             donut.update_traces(
                 textinfo="label+value",
-                textfont={"family": "Share Tech Mono, monospace", "size": 11},
+                textfont={"family": "Inter, sans-serif", "size": 11},
                 marker={"line": {"color": "#04070e", "width": 2}},
+                # La part filtrée est détachée : le filtre actif se voit sur le
+                # graphe lui-même, pas seulement dans le bandeau.
+                pull=[0.08 if p == selected_phase else 0 for p in phases["flight_phase"]],
             )
             style_fig(donut, height=240)
             donut.update_layout(showlegend=False, margin={"l": 0, "r": 0, "t": 6, "b": 0})
-            st.plotly_chart(donut, use_container_width=True)
+            st.plotly_chart(donut, width="stretch")
 
             st.metric(
-                "Altitude mediane",
+                "Altitude médiane",
                 f"{latest['barometric_altitude_ft'].median():,.0f} ft".replace(",", " "),
             )
-            st.metric("Vitesse mediane", f"{latest['ground_speed_kt'].median():.0f} kt")
+            st.metric("Vitesse médiane", f"{latest['ground_speed_kt'].median():.0f} kt")
 
     st.divider()
 
-    # -- Serie horaire -----------------------------------------------------
+    # -- Série horaire -----------------------------------------------------
     st.subheader("Tendance horaire")
 
     hourly = load(
@@ -846,24 +1263,24 @@ def _render_body() -> None:
 
     if len(hourly) < 2:
         st.info(
-            "L'agregat horaire demande au moins deux heures de collecte. "
-            "En attendant, la courbe releve par releve ci-dessus fait le travail.",
+            "L'agrégat horaire demande au moins deux heures de collecte. "
+            "En attendant, la courbe relevé par relevé ci-dessus fait le travail.",
         )
     else:
         trend = px.area(
             hourly,
             x="traffic_hour",
             y="positions",
-            labels={"traffic_hour": "Heure (UTC)", "positions": "Positions collectees"},
+            labels={"traffic_hour": "Heure (UTC)", "positions": "Positions collectées"},
         )
         trend.update_traces(
             line={"color": "#00e5ff", "width": 2.2},
             fillcolor="rgba(0,229,255,0.14)",
         )
         style_fig(trend, height=300)
-        st.plotly_chart(trend, use_container_width=True)
+        st.plotly_chart(trend, width="stretch")
         st.caption(
-            "Agregat issu de `fct_traffic_hourly`. C'est ici que le creux "
+            "Agrégat issu de `fct_traffic_hourly`. C'est ici que le creux "
             "nocturne et le pic du matin deviennent visibles."
         )
 
@@ -883,6 +1300,7 @@ def _render_body() -> None:
             limit 12
             """
         )
+        selected_country = active_filters().get("origin_country")
         chart = px.bar(
             countries.sort_values("positions"),
             x="positions",
@@ -890,12 +1308,22 @@ def _render_body() -> None:
             orientation="h",
             labels={"positions": "Positions", "origin_country": ""},
         )
-        chart.update_traces(marker={"color": "#00e5ff", "opacity": 0.85})
+        # La barre filtrée passe en vert : le filtre actif se repère d'un
+        # coup d'œil sur le graphe, sans lire le bandeau.
+        chart.update_traces(
+            marker={
+                "color": [
+                    "#34d399" if c == selected_country else "#22d3ee"
+                    for c in countries.sort_values("positions")["origin_country"]
+                ],
+                "opacity": 0.9,
+            }
+        )
         style_fig(chart, height=420)
-        st.plotly_chart(chart, use_container_width=True)
+        st.plotly_chart(chart, width="stretch")
 
     with airports_column:
-        st.subheader("Aeroports les plus actifs")
+        st.subheader("Aéroports les plus actifs")
         airports = load(
             """
             select
@@ -911,13 +1339,30 @@ def _render_body() -> None:
             limit 15
             """
         )
-        st.dataframe(airports, use_container_width=True, hide_index=True, height=420)
+        # Les en-tetes viennent des alias SQL : on les renomme pour
+        # l'affichage plutôt que d'accentuer la requête, dont les noms de
+        # colonnes servent aussi de clés côté Python.
+        st.dataframe(
+            airports.rename(
+                columns={
+                    "aeroport": "Aéroport",
+                    "ville": "Ville",
+                    "aeronefs": "Aéronefs",
+                    "en_approche": "En approche",
+                    "en_montee": "En montée",
+                    "distance_moy_km": "Distance moy. (km)",
+                }
+            ),
+            width="stretch",
+            hide_index=True,
+            height=420,
+        )
         st.caption(
-            "Les colonnes *en approche* et *en montee* sont inferees du taux "
-            "de montee : ADS-B ne publie pas de plan de vol."
+            "Les colonnes *en approche* et *en montée* sont inférées du taux "
+            "de montée : ADS-B ne publie pas de plan de vol."
         )
 
-    # -- Troisieme source : compagnies et flotte ---------------------------
+    # -- Troisième source : compagnies et flotte ---------------------------
     st.divider()
     st.subheader("Compagnies et flotte")
 
@@ -928,8 +1373,8 @@ def _render_body() -> None:
 
     if not airline_rows:
         st.info(
-            "Pas encore de donnees compagnies. La troisieme source (base "
-            "aeronefs OpenSky + compagnies OpenFlights) se remplit avec le pipeline.",
+            "Pas encore de données compagnies. La troisième source (base "
+            "aéronefs OpenSky + compagnies OpenFlights) se remplit avec le pipeline.",
         )
     else:
         fleet_left, fleet_right = st.columns(2)
@@ -953,7 +1398,7 @@ def _render_body() -> None:
                 )
             )
             choice = st.selectbox(
-                "Part de marche des compagnies a...",
+                "Part de marché des compagnies à l'aéroport",
                 options=list(labels.keys()),
                 format_func=lambda code: labels.get(code, code),
             )
@@ -968,11 +1413,20 @@ def _render_body() -> None:
                 x="aeronefs",
                 y="airline_name",
                 orientation="h",
-                labels={"aeronefs": "Aeronefs distincts", "airline_name": ""},
+                labels={"aeronefs": "Aéronefs distincts", "airline_name": ""},
             )
-            bar.update_traces(marker={"color": "#31f2a0", "opacity": 0.85})
+            selected_airline = active_filters().get("airline_name")
+            bar.update_traces(
+                marker={
+                    "color": [
+                        "#22d3ee" if a == selected_airline else "#34d399"
+                        for a in here.sort_values("aeronefs")["airline_name"]
+                    ],
+                    "opacity": 0.9,
+                }
+            )
             style_fig(bar, height=360)
-            st.plotly_chart(bar, use_container_width=True)
+            st.plotly_chart(bar, width="stretch")
 
         with fleet_right:
             makers = load(
@@ -991,10 +1445,12 @@ def _render_body() -> None:
                 hole=0.58,
                 color_discrete_sequence=NEON,
             )
+            selected_maker = active_filters().get("manufacturer_group")
             donut.update_traces(
                 textinfo="label+percent",
-                textfont={"family": "Share Tech Mono, monospace", "size": 11},
+                textfont={"family": "Inter, sans-serif", "size": 11},
                 marker={"line": {"color": "#04070e", "width": 2}},
+                pull=[0.08 if m == selected_maker else 0 for m in makers["manufacturer_group"]],
             )
             style_fig(donut, height=360)
             donut.update_layout(
@@ -1002,13 +1458,13 @@ def _render_body() -> None:
                 title={"text": "Constructeurs (Airbus vs Boeing...)", "y": 0.97},
                 margin={"l": 8, "r": 8, "t": 46, "b": 6},
             )
-            st.plotly_chart(donut, use_container_width=True)
+            st.plotly_chart(donut, width="stretch")
             st.caption(
-                "Type et constructeur issus de la base aeronefs OpenSky ; "
-                "compagnie deduite du prefixe d'indicatif (OpenFlights)."
+                "Type et constructeur issus de la base aéronefs OpenSky ; "
+                "compagnie déduite du préfixe d'indicatif (OpenFlights)."
             )
 
-        # Top modeles d'avions (tous les types repertories dans la base).
+        # Top modèles d'avions (tous les types répertoriés dans la base).
         models = load(
             """
             select
@@ -1023,7 +1479,7 @@ def _render_body() -> None:
             """
         )
         if not models.empty:
-            # Etiquette lisible : "Boeing B738" plutot que le code seul.
+            # Étiquette lisible : "Boeing B738" plutôt que le code seul.
             models["label"] = [
                 f"{m} {t}" if m else t
                 for m, t in zip(models["manufacturer"], models["aircraft_type"], strict=False)
@@ -1033,7 +1489,7 @@ def _render_body() -> None:
                 x="aeronefs",
                 y="label",
                 orientation="h",
-                labels={"aeronefs": "Aeronefs distincts", "label": ""},
+                labels={"aeronefs": "Aéronefs distincts", "label": ""},
                 text="aeronefs",
             )
             model_chart.update_traces(
@@ -1044,14 +1500,14 @@ def _render_body() -> None:
             )
             style_fig(model_chart, height=480)
             model_chart.update_layout(
-                title={"text": "Modeles d'avions les plus vus", "y": 0.97},
+                title={"text": "Modèles d'avions les plus vus", "y": 0.97},
                 margin={"l": 8, "r": 44, "t": 48, "b": 6},
             )
-            st.plotly_chart(model_chart, use_container_width=True)
+            st.plotly_chart(model_chart, width="stretch")
 
-    # -- Deuxieme source : trafic et qualite de l'air ----------------------
+    # -- Deuxième source : trafic et qualité de l'air ----------------------
     st.divider()
-    st.subheader("Trafic et qualite de l'air")
+    st.subheader("Trafic et qualité de l'air")
 
     air_quality = load(
         """
@@ -1076,34 +1532,34 @@ def _render_body() -> None:
 
     if not air_quality["n"] or air_quality["n"] < 10:
         st.info(
-            "Pas encore assez de donnees croisees trafic / qualite de l'air. "
-            "La deuxieme source (Open-Meteo) se remplit avec le pipeline.",
+            "Pas encore assez de données croisées trafic / qualité de l'air. "
+            "La deuxième source (Open-Météo) se remplit avec le pipeline.",
         )
     else:
         left, right = st.columns([1, 2])
         with left:
             st.metric(
-                "Correlation r (brute)",
+                "Corrélation r (brute)",
                 f"{air_quality['r_naive']:+.2f}",
                 help=(
-                    "Coefficient de correlation de Pearson entre le nombre "
-                    "d'avions et le NO2, par heure. Sans unite, de -1 a +1 "
-                    "(0 = aucun lien). Le NO2 est mesure en microgrammes/m3."
+                    "Coefficient de corrélation de Pearson entre le nombre "
+                    "d'avions et le NO2, par heure. Sans unité, de -1 à +1 "
+                    "(0 = aucun lien). Le NO2 est mesuré en µg/m³."
                 ),
             )
             st.metric(
-                "Correlation r (intra-aeroport)",
+                "Corrélation r (intra-aéroport)",
                 f"{air_quality['r_within']:+.2f}",
                 help=(
-                    "Meme coefficient, apres retrait de la moyenne de chaque "
-                    "aeroport. La correlation brute, positive, s'inverse : le "
-                    "lien n'est qu'un artefact 'entre aeroports'."
+                    "Même coefficient, après retrait de la moyenne de chaque "
+                    "aéroport. La corrélation brute, positive, s'inverse : le "
+                    "lien n'est qu'un artefact 'entre aéroports'."
                 ),
             )
             st.caption(
-                "r = coefficient de correlation de Pearson (sans unite, -1 a +1). "
-                "A l'echelle horaire, le trafic aerien n'est pas un predicteur "
-                "detectable du NO2 au sol. Analyse complete : "
+                "r = coefficient de corrélation de Pearson (sans unité, -1 à +1). "
+                "À l'échelle horaire, le trafic aérien n'est pas un prédicteur "
+                "détectable du NO2 au sol. Analyse complète : "
                 "`docs/analyse_trafic_qualite_air.md`."
             )
         with right:
@@ -1121,21 +1577,21 @@ def _render_body() -> None:
                 color="airport_iata_code",
                 labels={
                     "distinct_aircraft": "Avions distincts par heure",
-                    "no2_ugm3": "NO2 au sol (ug/m3)",
-                    "airport_iata_code": "Aeroport",
+                    "no2_ugm3": "NO2 au sol (µg/m³)",
+                    "airport_iata_code": "Aéroport",
                 },
             )
             scatter.update_traces(marker={"size": 7, "opacity": 0.75})
             style_fig(scatter, height=360)
-            st.plotly_chart(scatter, use_container_width=True)
+            st.plotly_chart(scatter, width="stretch")
 
     # -- Pied de page ------------------------------------------------------
     st.divider()
     st.caption(
-        f"Dernier releve : {last_seen:%Y-%m-%d %H:%M:%S} UTC | "
-        f"Page rafraichie a {datetime.now(UTC):%H:%M:%S} UTC | "
-        f"Entrepot : {SETTINGS.resolved_duckdb_path.name} | "
-        "Sources : OpenSky Network + OurAirports + Open-Meteo + OpenFlights"
+        f"Dernier relevé : {last_seen:%Y-%m-%d %H:%M:%S} UTC | "
+        f"Page rafraîchie à {datetime.now(UTC):%H:%M:%S} UTC | "
+        f"Entrepôt : {SETTINGS.resolved_duckdb_path.name} | "
+        "Sources : OpenSky Network + OurAirports + Open-Météo + OpenFlights"
     )
 
 

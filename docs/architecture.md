@@ -92,6 +92,16 @@ stockage et se recalculent à la volée. Seules les tables de faits et de
 dimensions sont matérialisées, car elles sont lues en boucle par le
 tableau de bord.
 
+### Une exception au contrat de lecture
+
+Le tableau de bord ne lit que les marts, à une exception près : quand on
+clique un appareil sur la carte, il interroge Planespotters pour obtenir une
+photographie de CET appareil. Cet appel reste hors du lac, et c'est
+délibéré - une image n'est pas une donnée analytique : on ne l'agrège pas, on
+ne l'historise pas, et la stocker reviendrait à recopier l'œuvre d'un
+photographe. L'appel est mis en cache 24 h et son échec est silencieux : une
+vignette manquante ne doit jamais empêcher l'affichage de la fiche.
+
 ### Stratégie incrémentale
 
 `fct_aircraft_positions` utilise `incremental_strategy = 'delete+insert'`

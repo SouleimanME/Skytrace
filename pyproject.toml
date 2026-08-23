@@ -31,7 +31,7 @@ orchestration = [
     "dagster-dbt>=0.23",
 ]
 dashboard = [
-    "streamlit>=1.36",
+    "streamlit>=1.49",
     "plotly>=5.22",
     "pydeck>=0.9",
 ]

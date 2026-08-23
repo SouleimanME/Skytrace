@@ -25,6 +25,6 @@ dbt-core>=1.8
 dbt-duckdb>=1.8
 
 # --- Tableau de bord (extra "dashboard") ---
-streamlit>=1.36
+streamlit>=1.49
 plotly>=5.22
 pydeck>=0.9

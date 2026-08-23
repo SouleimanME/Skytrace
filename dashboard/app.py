@@ -70,8 +70,11 @@ PHASE_COLOURS = {
     "inconnu": "#6b7ea6",
 }
 
-#: Cadence du planning. Sert de reference pour juger de la fraicheur.
-SCHEDULE_MINUTES = 15
+#: Cadence du collecteur deploye (cron GitHub Actions, */30). Sert de
+#: reference pour juger de la fraicheur. Note : le cron GitHub n'est pas
+#: garanti a la minute pres et peut etre retarde sur un depot peu actif -
+#: d'ou des seuils volontairement tolerants.
+SCHEDULE_MINUTES = 30
 
 
 # ---------------------------------------------------------------------------
@@ -364,7 +367,7 @@ with st.sidebar:
     st.divider()
     st.caption(
         f"Collecte planifiee toutes les {SCHEDULE_MINUTES} min "
-        "(`traffic_every_15_minutes` dans Dagster)."
+        "(GitHub Actions en production, Dagster en local)."
     )
 
 # Sur un environnement neuf, construire l'entrepot avant toute lecture.
@@ -443,7 +446,7 @@ def _render_body() -> None:
         status_chip(
             "err",
             f"SIGNAL PERDU // aucune donnee depuis {age_minutes / 60:.1f} h - "
-            "activer le planning dans Dagster",
+            "verifier le workflow Collecte planifiee (onglet Actions)",
         )
 
     # -- Indicateurs cles --------------------------------------------------

@@ -19,10 +19,13 @@ name: Collecte planifiee
 
 on:
   schedule:
-    # Toutes les 30 minutes. Le cron GitHub Actions n'est pas garanti a la
-    # minute pres ; le bandeau de fraicheur du tableau de bord rend les trous
-    # visibles.
-    - cron: "*/30 * * * *"
+    # Toutes les 30 minutes, mais DECALE des heures rondes (7 et 37 plutot
+    # que 0 et 30). GitHub execute les crons "au mieux" et la contention est
+    # maximale aux minutes rondes, ou tout le monde planifie : mesure faite
+    # sur ce depot, les ecarts reels allaient de 52 a 226 min. Se decaler
+    # reduit sensiblement l'attente. Les trous restants sont assumes et
+    # rendus visibles par le bandeau de fraicheur du tableau de bord.
+    - cron: "7,37 * * * *"
   workflow_dispatch: {} # declenchement manuel depuis l'onglet Actions
 
 concurrency:

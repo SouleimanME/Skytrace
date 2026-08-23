@@ -19,6 +19,7 @@ Lancement : `skytrace dashboard` (ou `streamlit run dashboard/app.py`).
 
 from __future__ import annotations
 
+import math
 import os
 import sys
 from datetime import UTC, datetime
@@ -59,34 +60,56 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-#: Palette neon, reutilisee par les graphes et le theme CSS.
-NEON = ["#00e5ff", "#2b6bff", "#31f2a0", "#ffb020", "#ff4d6d", "#b388ff", "#8be9fd"]
+#: Palette, reutilisee par les graphes et le theme CSS. Teintes moins
+#: saturees que du neon pur : sur fond sombre, elles restent distinctes sans
+#: vibrer, et supportent d'etre superposees en semi-transparence.
+NEON = ["#22d3ee", "#3b82f6", "#34d399", "#fbbf24", "#fb7185", "#a78bfa", "#67e8f9"]
 
+#: Une phase de vol = une couleur, choisie pour rester distinguable meme
+#: pour un daltonisme rouge-vert (le vert monte / l'ambre descend different
+#: aussi par la luminosite).
 PHASE_COLOURS = {
-    "croisiere": "#00e5ff",
-    "montee": "#31f2a0",
-    "descente": "#ffb020",
-    "sol": "#3b5a8a",
-    "inconnu": "#6b7ea6",
+    "croisiere": "#22d3ee",
+    "montee": "#34d399",
+    "descente": "#fbbf24",
+    "sol": "#64748b",
+    "inconnu": "#475569",
 }
 
-#: Cadence du collecteur deploye (cron GitHub Actions, */30). Sert de
-#: reference pour juger de la fraicheur. Note : le cron GitHub n'est pas
-#: garanti a la minute pres et peut etre retarde sur un depot peu actif -
-#: d'ou des seuils volontairement tolerants.
+#: Cadence NOMINALE du collecteur deploye (cron GitHub Actions).
 SCHEDULE_MINUTES = 30
+
+#: Seuils de fraicheur, calibres sur le comportement observe et non sur la
+#: cadence nominale : GitHub differe frequemment les crons (ecarts mesures
+#: ici entre 50 min et 3 h). Alerter des 35 min reviendrait a alerter en
+#: permanence, donc a ne plus rien signaler du tout.
+NOMINAL_MAX_MINUTES = 75
+DEGRADED_MAX_MINUTES = 240
+
+#: Nombre maximal de marqueurs traces sur la carte. Au-dela, le navigateur
+#: peine a animer le nuage (un releve mondial depasse 7 000 aeronefs) et le
+#: defilement devient poussif ; on echantillonne alors, en l'annoncant.
+MAP_MAX_POINTS = 3000
 
 
 # ---------------------------------------------------------------------------
 # Theme (cockpit / HUD)
 # ---------------------------------------------------------------------------
 THEME_CSS = """
-@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Share+Tech+Mono&family=Rajdhani:wght@400;500;600;700&display=swap');
+/* Typographie : deux familles seulement, choisies pour la lisibilite plutot
+   que pour l'effet. Inter pour le texte (standard des interfaces modernes),
+   JetBrains Mono pour les chiffres et identifiants - une vraie police de
+   developpeur, dont les chiffres sont concus pour s'aligner en colonne.
+   Orbitron ne sert QUE au logotype : partout ailleurs il fatigue l'oeil. */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Orbitron:wght@700;900&display=swap');
 
 :root{
-  --cyan:#00e5ff; --blue:#2b6bff; --green:#31f2a0; --amber:#ffb020; --red:#ff4d6d;
-  --text:#dbe7ff; --muted:#6b7ea6; --line:rgba(0,229,255,0.20);
-  --panel:rgba(12,20,38,0.72); --grid:rgba(60,130,210,0.09);
+  --cyan:#22d3ee; --blue:#3b82f6; --green:#34d399; --amber:#fbbf24; --red:#fb7185;
+  /* Contraste releve : l'ancien gris (#6b7ea6) tombait sous le seuil de
+     lisibilite WCAG sur fond sombre et donnait un rendu terne. */
+  --text:#e6edf7; --muted:#9fb3d1; --dim:#7d93b5;
+  --line:rgba(34,211,238,0.18);
+  --panel:rgba(13,20,35,0.92); --grid:rgba(70,130,200,0.07);
 }
 
 .stApp{
@@ -108,35 +131,49 @@ THEME_CSS = """
 .block-container{position:relative; z-index:1; padding-top:1.4rem; max-width:1500px;}
 
 body, .stApp, p, span, label, li, div[data-testid="stMarkdownContainer"]{
-  color:var(--text); font-family:'Rajdhani','Segoe UI',sans-serif;
+  color:var(--text); font-family:'Inter','Segoe UI',sans-serif;
+  font-size:0.94rem; line-height:1.55;
 }
-h1,h2,h3{ font-family:'Orbitron','Segoe UI',sans-serif !important; letter-spacing:2px; text-transform:uppercase;}
-h2,h3{ color:var(--cyan); text-shadow:0 0 16px rgba(0,229,255,0.30); font-weight:700;}
-h2{ font-size:1.15rem;} h3{ font-size:1.0rem;}
+/* Titres de section : Inter en graisse forte plutot qu'une police "techno".
+   Le filet cyan est une BORDURE et non un pseudo-element positionne en
+   absolu : Streamlit enveloppe les titres dans plusieurs conteneurs, et un
+   `position:absolute` s'ancrait sur le mauvais parent - d'ou une barre qui
+   se detachait du titre. Une bordure suit toujours son element. */
+h1,h2,h3{ font-family:'Inter','Segoe UI',sans-serif !important; }
+h2,h3{
+  color:#dff6fb; font-weight:600; letter-spacing:0.06em; text-transform:uppercase;
+  border-left:3px solid var(--cyan); padding-left:12px; text-shadow:none;
+  line-height:1.35;
+}
+h2{ font-size:1.02rem;} h3{ font-size:0.92rem;}
 
 /* -- bandeau titre HUD -- */
 .hud{
   border:1px solid var(--line); border-radius:14px; padding:18px 22px; margin-bottom:6px;
   background: linear-gradient(120deg, rgba(0,229,255,0.06), rgba(43,107,255,0.04));
   box-shadow: inset 0 0 40px rgba(0,229,255,0.05), 0 0 30px rgba(2,8,20,0.6);
-  backdrop-filter: blur(6px);
   display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;
 }
+/* Halo fixe plutot qu'anime : une animation de `text-shadow` force le
+   navigateur a repeindre le titre en continu, ce qui saccade le defilement
+   pour un gain visuel nul. */
 .hud-title{ font-family:'Orbitron',sans-serif; font-weight:900; font-size:2.1rem; letter-spacing:6px;
-  color:#eaf9ff; text-shadow:0 0 18px rgba(0,229,255,0.55), 0 0 3px #fff; margin:0;
-  animation: pulse 3.2s ease-in-out infinite;}
-@keyframes pulse{ 0%,100%{text-shadow:0 0 14px rgba(0,229,255,0.40);} 50%{text-shadow:0 0 26px rgba(0,229,255,0.75);} }
-.hud-sub{ font-family:'Share Tech Mono',monospace; color:var(--muted); font-size:.82rem; letter-spacing:2px;}
-.hud-badge{ font-family:'Share Tech Mono',monospace; font-size:.75rem; letter-spacing:2px;
+  color:#eaf9ff; text-shadow:0 0 20px rgba(34,211,238,0.50), 0 0 3px rgba(255,255,255,0.5); margin:0;}
+.hud-sub{ font-family:'JetBrains Mono',monospace; color:var(--muted); font-size:.76rem;
+  letter-spacing:.12em; font-weight:400;}
+.hud-badge{ font-family:'JetBrains Mono',monospace; font-size:.68rem; letter-spacing:.1em;
   border:1px solid var(--line); border-radius:20px; padding:6px 14px; color:var(--cyan);
-  box-shadow:inset 0 0 14px rgba(0,229,255,0.10);}
+  box-shadow:inset 0 0 14px rgba(34,211,238,0.08); font-weight:500;}
 
 /* -- puce de statut -- */
-.hud-status{ font-family:'Share Tech Mono',monospace; font-size:.85rem; letter-spacing:1px;
-  border-radius:10px; padding:10px 16px; margin:2px 0 6px; border:1px solid var(--line);
-  background:var(--panel); display:flex; align-items:center; gap:10px; backdrop-filter:blur(6px);}
-.hud-status .dot{ width:10px; height:10px; border-radius:50%; box-shadow:0 0 12px currentColor; animation:blink 1.6s infinite;}
-@keyframes blink{ 0%,100%{opacity:1;} 50%{opacity:.35;} }
+.hud-status{ font-family:'JetBrains Mono',monospace; font-size:.79rem; letter-spacing:.04em;
+  border-radius:10px; padding:11px 16px; margin:2px 0 6px; border:1px solid var(--line);
+  background:var(--panel); display:flex; align-items:center; gap:10px;}
+/* Le point clignote via `opacity`, propriete composee par le GPU : contrairement
+   a une animation d'ombre ou de couleur, elle ne declenche aucun repaint. */
+.hud-status .dot{ width:9px; height:9px; border-radius:50%; box-shadow:0 0 10px currentColor;
+  animation:blink 2.4s ease-in-out infinite; will-change:opacity;}
+@keyframes blink{ 0%,100%{opacity:1;} 50%{opacity:.45;} }
 .hud-status.ok{ color:var(--green);} .hud-status.ok .dot{ background:var(--green);}
 .hud-status.warn{ color:var(--amber);} .hud-status.warn .dot{ background:var(--amber);}
 .hud-status.err{ color:var(--red);} .hud-status.err .dot{ background:var(--red);}
@@ -146,7 +183,7 @@ h2{ font-size:1.15rem;} h3{ font-size:1.0rem;}
   background: linear-gradient(160deg, rgba(0,229,255,0.07), var(--panel) 62%);
   border:1px solid var(--line); border-radius:12px; padding:16px 18px 12px;
   box-shadow: inset 0 0 26px rgba(0,229,255,0.06), 0 0 22px rgba(2,8,20,0.55);
-  backdrop-filter: blur(6px); position:relative; overflow:hidden;
+   position:relative; overflow:hidden;
   transition: box-shadow .2s ease, transform .2s ease;
 }
 [data-testid="stMetric"]:hover{
@@ -156,10 +193,13 @@ h2{ font-size:1.15rem;} h3{ font-size:1.0rem;}
 [data-testid="stMetric"]::after{ content:""; position:absolute; left:0; top:0; width:100%; height:3px;
   background:linear-gradient(90deg,transparent,var(--cyan),transparent); opacity:.9;
   box-shadow:0 0 10px var(--cyan);}
-[data-testid="stMetricValue"]{ font-family:'Share Tech Mono',monospace !important; color:#f2fbff;
-  font-size:2.45rem; font-weight:400; line-height:1.08; text-shadow:0 0 20px rgba(0,229,255,0.60);}
-[data-testid="stMetricLabel"] p{ color:var(--cyan) !important; text-transform:uppercase;
-  letter-spacing:2px; font-size:.68rem; font-family:'Share Tech Mono',monospace; opacity:.85;}
+/* Chiffres en JetBrains Mono : chasse fixe et tabular-nums, donc les valeurs
+   restent alignees d'une carte a l'autre et ne "sautent" pas au rafraichissement. */
+[data-testid="stMetricValue"]{ font-family:'JetBrains Mono',monospace !important; color:#f4fbff;
+  font-size:2.15rem; font-weight:500; line-height:1.12; letter-spacing:-0.01em;
+  font-variant-numeric: tabular-nums; text-shadow:0 0 22px rgba(34,211,238,0.35);}
+[data-testid="stMetricLabel"] p{ color:var(--muted) !important; text-transform:uppercase;
+  letter-spacing:.14em; font-size:.66rem; font-family:'Inter',sans-serif; font-weight:600;}
 
 hr{ border:none; height:1px; background:linear-gradient(90deg,transparent,var(--line),transparent); margin:1.1rem 0;}
 
@@ -169,15 +209,26 @@ hr{ border:none; height:1px; background:linear-gradient(90deg,transparent,var(--
 [data-testid="stDataFrame"]{ border:1px solid var(--line); border-radius:12px; overflow:hidden;
   box-shadow:0 0 20px rgba(2,8,20,0.5);}
 
-.stButton>button{ background:transparent; border:1px solid var(--cyan); color:var(--cyan);
-  text-transform:uppercase; letter-spacing:1.5px; font-family:'Share Tech Mono',monospace;
-  border-radius:9px; transition:all .2s;}
-.stButton>button:hover{ box-shadow:0 0 18px rgba(0,229,255,0.45); background:rgba(0,229,255,0.08); color:#eaf9ff;}
+.stButton>button{ background:transparent; border:1px solid var(--line); color:var(--cyan);
+  text-transform:uppercase; letter-spacing:.1em; font-family:'Inter',sans-serif;
+  font-weight:600; font-size:.74rem; border-radius:9px; transition:all .2s;}
+.stButton>button:hover{ box-shadow:0 0 18px rgba(34,211,238,0.35);
+  background:rgba(34,211,238,0.07); color:#eaf9ff; border-color:var(--cyan);}
 
 [data-testid="stAlert"]{ background:var(--panel) !important; border:1px solid var(--line);
-  border-radius:12px; backdrop-filter:blur(6px);}
-[data-testid="stCaptionContainer"] p{ color:var(--muted); font-family:'Share Tech Mono',monospace; font-size:.74rem;}
+  border-radius:12px;}
+/* Legendes : Inter et non monospace. Le monospace sur du texte courant est
+   plus lent a lire ; on le reserve aux chiffres et aux identifiants. */
+[data-testid="stCaptionContainer"] p{
+  color:var(--dim); font-family:'Inter',sans-serif; font-size:.78rem; line-height:1.5;}
+[data-testid="stCaptionContainer"] code{
+  font-family:'JetBrains Mono',monospace; font-size:.74rem; color:var(--muted);
+  background:rgba(34,211,238,0.07); padding:1px 5px; border-radius:4px;}
 [data-testid="stElementToolbar"]{ display:none;}
+
+/* Barre laterale : hierarchie plus nette, texte lisible. */
+[data-testid="stSidebar"] h2{ font-size:.82rem; letter-spacing:.16em; color:var(--cyan);}
+[data-testid="stSidebar"] [data-testid="stCaptionContainer"] p{ font-size:.75rem; color:var(--dim);}
 """
 
 
@@ -186,23 +237,47 @@ def inject_theme() -> None:
 
 
 def style_fig(fig, height: int | None = None):
-    """Applique le theme cockpit a une figure Plotly."""
+    """Applique le theme du tableau de bord a une figure Plotly.
+
+    Choix de lisibilite plutot que d'effet : grille discrete (elle guide sans
+    concurrencer la donnee), axes en Inter, valeurs en JetBrains Mono avec
+    chiffres tabulaires, et infobulle contrastee.
+    """
+    axis = {
+        "gridcolor": "rgba(90,140,200,0.10)",
+        "zerolinecolor": "rgba(90,140,200,0.18)",
+        "linecolor": "rgba(90,140,200,0.22)",
+        "tickfont": {"family": "JetBrains Mono, monospace", "size": 11, "color": "#9fb3d1"},
+        "title": {"font": {"family": "Inter, sans-serif", "size": 12, "color": "#7d93b5"}},
+    }
     fig.update_layout(
         template="plotly_dark",
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         colorway=NEON,
-        font={"family": "Share Tech Mono, monospace", "color": "#9fb4d8", "size": 12},
+        font={"family": "Inter, sans-serif", "color": "#9fb3d1", "size": 12},
         margin={"l": 8, "r": 8, "t": 14, "b": 6},
-        xaxis={"gridcolor": "rgba(70,130,210,0.12)", "zerolinecolor": "rgba(70,130,210,0.2)"},
-        yaxis={"gridcolor": "rgba(70,130,210,0.12)", "zerolinecolor": "rgba(70,130,210,0.2)"},
-        legend={"bgcolor": "rgba(0,0,0,0)"},
+        xaxis=axis,
+        yaxis=axis,
+        legend={
+            "bgcolor": "rgba(0,0,0,0)",
+            "font": {"family": "Inter, sans-serif", "size": 11, "color": "#9fb3d1"},
+        },
         hoverlabel={
-            "bgcolor": "#0a1120",
-            "bordercolor": "#00e5ff",
-            "font": {"family": "Share Tech Mono, monospace", "color": "#eaf9ff"},
+            "bgcolor": "rgba(10,17,32,0.96)",
+            "bordercolor": "#22d3ee",
+            "font": {"family": "JetBrains Mono, monospace", "size": 12, "color": "#eaf9ff"},
         },
     )
+    # Le titre n'est style QUE s'il existe. Toucher au titre d'une figure qui
+    # n'en a pas (via `title_font` ou `title={"text": None}`) fait afficher a
+    # Plotly le litteral "undefined" au-dessus du graphe : cote JavaScript,
+    # l'absence de texte est serialisee en `undefined` puis rendue telle quelle.
+    if fig.layout.title.text:
+        fig.update_layout(
+            title_font={"family": "Inter, sans-serif", "size": 13, "color": "#dff6fb"}
+        )
+
     if height:
         fig.update_layout(height=height)
     return fig
@@ -211,15 +286,16 @@ def style_fig(fig, height: int | None = None):
 # ---------------------------------------------------------------------------
 # Acces aux donnees
 # ---------------------------------------------------------------------------
-@st.cache_data(ttl=10, show_spinner=False)
+@st.cache_data(ttl=90, show_spinner=False)
 def load(sql: str) -> pd.DataFrame:
     """Execute une requete sur l'entrepot en lecture seule.
 
     Lecture seule volontairement : DuckDB n'autorise qu'un seul ecrivain,
     et le tableau de bord ne doit jamais bloquer un run dbt en cours.
 
-    Le cache est volontairement tres court (10 s) : il ne sert qu'a
-    dedupliquer les appels d'un meme rendu, pas a garder la donnee.
+    Cache de 90 s : la donnee amont ne change qu'a chaque collecte (30 min au
+    mieux), donc interroger DuckDB a chaque interaction de widget etait du
+    gaspillage pur - c'etait la principale source de latence percue.
 
     Le fuseau est force en UTC : DuckDB rend sinon les TIMESTAMPTZ dans le
     fuseau de la machine, et la page afficherait des heures locales sous
@@ -434,14 +510,23 @@ def _render_body() -> None:
     age_minutes = (datetime.now(UTC) - last_seen.to_pydatetime()).total_seconds() / 60
     span_hours = (overview["fin"] - overview["debut"]).total_seconds() / 3600
 
-    if age_minutes <= SCHEDULE_MINUTES + 5:
+    # Seuils calibres sur le comportement REEL du cron GitHub Actions, pas sur
+    # sa cadence theorique : mesure faite sur ce depot, les ecarts entre deux
+    # collectes vont de 50 min a plus de 3 h (GitHub execute les crons "au
+    # mieux"). Des seuils calques sur les 30 min nominales afficheraient une
+    # alerte en permanence, ce qui reviendrait a n'alerter sur rien.
+    if age_minutes <= NOMINAL_MAX_MINUTES:
         status_chip(
             "ok",
             f"SIGNAL NOMINAL // dernier releve il y a {age_minutes:.0f} min "
             f"({last_seen:%H:%M:%S} UTC)",
         )
-    elif age_minutes <= SCHEDULE_MINUTES * 3:
-        status_chip("warn", f"CYCLE MANQUE // dernier releve il y a {age_minutes:.0f} min")
+    elif age_minutes <= DEGRADED_MAX_MINUTES:
+        status_chip(
+            "warn",
+            f"COLLECTE RETARDEE // dernier releve il y a {age_minutes:.0f} min "
+            "(le cron GitHub est frequemment differe)",
+        )
     else:
         status_chip(
             "err",
@@ -530,33 +615,78 @@ def _render_body() -> None:
         if latest.empty:
             st.info("Aucune position sur le dernier snapshot.")
         else:
+            # Le point porte deux informations : la couleur dit la phase de
+            # vol, la taille dit l'altitude. Un appareil au sol apparait donc
+            # petit et gris, un long-courrier en croisiere gros et cyan - la
+            # structure du trafic se lit sans legende.
+            latest = latest.copy()
+            latest["altitude_ft"] = latest["barometric_altitude_ft"].fillna(0).clip(lower=0)
+
+            # En zone monde un releve depasse 7 000 aeronefs : le navigateur
+            # peine a animer autant de marqueurs et la page devient poussive.
+            # Au-dela du seuil on echantillonne (graine fixe, donc stable d'un
+            # rafraichissement a l'autre) : la structure geographique reste
+            # identique, et le fait est annonce sous la carte plutot que tu.
+            plotted, total = latest, len(latest)
+            if total > MAP_MAX_POINTS:
+                plotted = latest.sample(MAP_MAX_POINTS, random_state=0)
+
+            # Cadrage automatique sur la donnee reelle plutot qu'un zoom fixe :
+            # la meme page reste lisible que la zone soit la France ou le monde.
+            lat_span = plotted["latitude"].max() - plotted["latitude"].min()
+            lon_span = plotted["longitude"].max() - plotted["longitude"].min()
+            span = max(lat_span, lon_span / 1.8, 1.0)
+            zoom = max(1.0, min(6.5, 7.6 - math.log2(span)))
+
             figure = px.scatter_map(
-                latest,
+                plotted,
                 lat="latitude",
                 lon="longitude",
                 color="flight_phase",
                 color_discrete_map=PHASE_COLOURS,
-                size_max=9,
-                zoom=4,
-                height=520,
+                size="altitude_ft",
+                size_max=11,
+                zoom=zoom,
+                center={
+                    "lat": float(plotted["latitude"].median()),
+                    "lon": float(plotted["longitude"].median()),
+                },
+                height=560,
                 hover_name="callsign",
                 hover_data={
                     "origin_country": True,
                     "barometric_altitude_ft": ":,.0f",
                     "ground_speed_kt": ":.0f",
+                    "altitude_ft": False,
                     "latitude": False,
                     "longitude": False,
                 },
                 labels={"flight_phase": "Phase"},
             )
             style_fig(figure)
-            figure.update_traces(marker={"size": 7, "opacity": 0.85})
+            figure.update_traces(marker={"opacity": 0.78, "sizemin": 3})
             figure.update_layout(
                 map_style="carto-darkmatter",
                 margin={"l": 0, "r": 0, "t": 0, "b": 0},
-                legend={"orientation": "h", "y": -0.05},
+                legend={
+                    "orientation": "h",
+                    "y": -0.04,
+                    "x": 0,
+                    "title": None,
+                    "font": {"family": "Inter, sans-serif", "size": 11},
+                },
             )
             st.plotly_chart(figure, use_container_width=True)
+            note = (
+                f"{len(plotted):,} points affiches sur {total:,} "
+                "(echantillon, pour garder la carte fluide). "
+                if len(plotted) < total
+                else ""
+            ).replace(",", " ")
+            st.caption(
+                f"{note}Couleur = phase de vol, taille = altitude. Cadrage "
+                "ajuste automatiquement a l'etendue des positions du releve."
+            )
 
     with phase_column:
         if not latest.empty:

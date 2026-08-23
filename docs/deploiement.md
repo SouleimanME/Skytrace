@@ -77,13 +77,35 @@ versionne (via dbt, une poignee de secondes), puis affiche le tableau de
 bord. A chaque nouvelle collecte, un push redeploie l'application, qui
 reconstruit et reflete la donnee fraiche.
 
-## Le point de vigilance a connaitre (et a savoir expliquer)
+## Le stockage : de git vers R2
 
-Chaque collecte committe des fichiers Parquet dans le depot. A ~2,5 Mo par
-jour, l'historique git grossit lentement. Pour une demonstration de quelques
-semaines, c'est negligeable. Pour un fonctionnement indefini, la bonne
-reponse est de sortir les donnees du depot vers un stockage objet
-compatible S3 (Cloudflare R2, 10 Go gratuits ; Backblaze B2) : DuckDB lit
-nativement `read_parquet('s3://...')`, et le depot ne porterait plus que le
-code. C'est l'evolution logique du projet, et un bon sujet a evoquer en
-entretien pour montrer qu'on connait les limites de sa propre solution.
+Historiquement, chaque collecte committait ses fichiers Parquet dans le
+depot. A l'echelle mondiale et en haute frequence, git n'est plus adapte.
+Le lac vit desormais sur **Cloudflare R2** (voir [`r2.md`](r2.md)) : le depot
+ne porte plus que le code, et le volume n'est borne que par la retention
+(`SKYTRACE_RETENTION_DAYS`, 180 jours par defaut).
+
+## La limite a connaitre : le cron GitHub n'est pas ponctuel
+
+Le workflow est declare toutes les 30 minutes, mais GitHub execute les crons
+**"au mieux"**, sans garantie de ponctualite - d'autant plus sur un depot
+public peu actif. Mesure faite sur ce projet, les ecarts reels entre deux
+collectes consecutives :
+
+| Ecart observe | 52 min | 57 min | 98 min | 105 min | 125 min | 226 min |
+|---|---|---|---|---|---|---|
+
+Deux consequences assumees dans le code :
+
+1. **Le cron est decale des minutes rondes** (`7,37 * * * *` plutot que
+   `*/30`). La contention est maximale a :00 et :30, ou tout le monde
+   planifie ; se decaler reduit sensiblement l'attente.
+2. **Les seuils de fraicheur du tableau de bord sont calibres sur le
+   comportement observe**, pas sur la cadence theorique : vert jusqu'a
+   75 min, orange jusqu'a 4 h, rouge au-dela. Alerter des 35 min afficherait
+   une alerte en permanence - c'est-a-dire n'alerterait plus sur rien.
+
+Pour une ponctualite garantie, il faudrait un ordonnanceur dedie (Dagster
+sur une machine, ou un service cron payant). Le compromis retenu ici est
+assume : gratuit, sans serveur, et la latence reelle est rendue visible
+plutot que masquee.

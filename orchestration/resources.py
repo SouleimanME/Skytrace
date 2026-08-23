@@ -42,6 +42,44 @@ dbt_project = DbtProject(
 dbt_project.prepare_if_dev()
 
 
+def ensure_manifest() -> None:
+    """Genere `manifest.json` s'il est absent.
+
+    `prepare_if_dev()` ne fait rien hors mode developpement. Sur un depot
+    fraichement clone (CI, machine d'un collegue), le manifeste n'existe donc
+    pas et `@dbt_assets` echoue avec DagsterDbtManifestNotFoundError. On le
+    fabrique ici, une fois, plutot que d'imposer un `dbt parse` prealable a
+    quiconque veut simplement lancer l'orchestrateur.
+    """
+    if dbt_project.manifest_path.exists():
+        return
+
+    import subprocess
+    import sys as _sys
+
+    settings = get_settings()
+    subprocess.run(
+        [
+            _sys.executable,
+            "-m",
+            "dbt.cli.main",
+            "parse",
+            "--project-dir",
+            str(DBT_PROJECT_DIR),
+            "--profiles-dir",
+            str(DBT_PROJECT_DIR),
+            "--target",
+            settings.dbt_target,
+        ],
+        env={**os.environ, **settings.dbt_env()},
+        cwd=str(DBT_PROJECT_DIR),
+        check=True,
+    )
+
+
+ensure_manifest()
+
+
 class OpenSkyResource(ConfigurableResource):
     """Acces a l'API OpenSky, configurable depuis l'interface Dagster.
 
@@ -98,5 +136,10 @@ def build_resources() -> dict[str, object]:
             project_dir=dbt_project,
             profiles_dir=str(DBT_PROJECT_DIR),
             dbt_executable=resolve_dbt_executable(),
+            # Cible explicite : `r2` quand le lac est sur R2, `dev` sinon.
+            # Sans cela dbt retomberait sur la cible par defaut (`dev`), qui
+            # n'a pas la configuration S3 - et echouerait a lire des sources
+            # en s3://.
+            target=get_settings().dbt_target,
         ),
     }

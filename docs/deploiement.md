@@ -109,3 +109,55 @@ Pour une ponctualite garantie, il faudrait un ordonnanceur dedie (Dagster
 sur une machine, ou un service cron payant). Le compromis retenu ici est
 assume : gratuit, sans serveur, et la latence reelle est rendue visible
 plutot que masquee.
+
+## L'autre limite : l'application se met en veille
+
+Streamlit Community Cloud arrete le conteneur d'une application restee sans
+visiteur. Le lien affiche alors une page "Zzzz" avec un bouton de reveil.
+Pour un lien de portfolio c'est genant : le premier visiteur tombe sur une
+page qui a l'air cassee.
+
+**La collecte, elle, n'est pas affectee.** GitHub Actions et R2 sont
+independants de Streamlit : pendant que la page dort, le pipeline continue
+d'ecrire dans le lac. C'est l'affichage qui s'eteint, pas la donnee.
+
+Deux details de la plateforme, decouverts en la sondant, qu'il faut connaitre
+pour diagnostiquer l'etat de l'application.
+
+**L'application n'est pas servie a la racine.** L'adresse publique rend une
+coquille Streamlit Cloud qui embarque l'application dans une iframe, sous le
+prefixe `/~/+/`. Sonder la racine ne dit donc rien de l'etat reel :
+
+| Chemin | Application en marche | Application endormie |
+|---|---|---|
+| `/_stcore/health` | `200` + du HTML | `200` + du HTML |
+| `/~/+/_stcore/health` | `200` + le texte `ok` | pas de `ok` |
+
+Le bon test est donc le second, et il porte sur le CORPS de la reponse, pas
+sur son statut - qui vaut 200 dans tous les cas.
+
+**La page de veille est rendue en JavaScript.** Son bouton de reveil n'existe
+pas au chargement du document : le chercher immediatement revient a conclure
+qu'il n'y en a pas.
+
+Cela explique aussi pourquoi **un `curl` periodique ne suffit pas** : la
+requete sur la racine est servie par le proxy sans jamais toucher au
+conteneur, donc elle ne remet pas le compteur d'inactivite a zero. Seule une
+session websocket - donc un vrai navigateur - compte comme une visite.
+
+Le workflow `keepalive.yml` fait cette visite quatre fois par jour avec
+Playwright (`scripts/keepalive.py`), et clique le bouton de reveil si
+l'application dort deja. Il est separe du workflow de collecte a dessein :
+son echec est cosmetique et ne doit jamais faire passer au rouge celui qui
+porte les donnees.
+
+Pour l'activer, definir la variable de depot `SKYTRACE_APP_URL` (Settings ->
+Secrets and variables -> Actions -> onglet Variables) avec l'adresse publique
+du tableau de bord. Sans elle le workflow ne fait rien, pour qu'un depot
+forke n'aille pas visiter l'application de quelqu'un d'autre.
+
+A savoir : l'offre gratuite est dimensionnee pour des applications peu
+visitees, et la maintenir eveillee par une visite programmee va contre cet
+esprit meme si rien ne l'interdit explicitement. L'intervalle est donc large
+- quatre visites par jour, la ou une par minute n'apporterait rien. Une
+alternative sans ambiguite existe : un hebergeur qui ne met pas en veille.

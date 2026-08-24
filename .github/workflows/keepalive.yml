@@ -1,0 +1,67 @@
+name: Maintien en eveil
+
+# Streamlit Community Cloud arrete le conteneur d'une application restee sans
+# visiteur : le lien du portfolio affiche alors une page "Zzzz" au lieu du
+# tableau de bord. Ce workflow ouvre la page dans un vrai navigateur, ce qui
+# compte comme une visite, et clique le bouton de reveil si besoin.
+#
+# Un `curl` ne suffirait pas : quand l'application dort, le proxy de Streamlit
+# repond 200 a toutes les URL sans jamais toucher au conteneur. Seule une
+# session websocket - donc un navigateur - est comptee.
+#
+# Deliberement peu frequent. L'offre gratuite est faite pour des applications
+# peu visitees ; la maintenir eveillee va contre cet esprit, et battre a la
+# minute serait du gaspillage pour un gain nul. Quatre visites par jour
+# suffisent a empecher la veille, et bornent a six heures la duree pendant
+# laquelle l'application resterait endormie si elle l'etait quand meme.
+#
+# Ce workflow est SEPARE de la collecte a dessein : son echec est cosmetique
+# et ne doit jamais faire passer au rouge le workflow qui porte les donnees.
+#
+# Activation : definir la variable de depot SKYTRACE_APP_URL
+# (Settings -> Secrets and variables -> Actions -> Variables) avec l'adresse
+# publique du tableau de bord. Sans elle, le workflow ne fait rien : un depot
+# forke ne doit pas aller visiter l'application de quelqu'un d'autre.
+
+on:
+  schedule:
+    # Toutes les six heures, decale des heures rondes ou la contention est
+    # maximale (meme raison que pour la collecte).
+    - cron: "23 1,7,13,19 * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: maintien-en-eveil
+  cancel-in-progress: true
+
+jobs:
+  visite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Adresse publique definie ?
+        id: garde
+        run: |
+          if [ -z "${{ vars.SKYTRACE_APP_URL }}" ]; then
+            echo "::notice::Variable SKYTRACE_APP_URL absente : rien a visiter."
+            echo "active=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "active=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-python@v5
+        if: steps.garde.outputs.active == 'true'
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Installation du navigateur
+        if: steps.garde.outputs.active == 'true'
+        run: |
+          pip install httpx playwright
+          playwright install --with-deps chromium
+
+      - name: Visite
+        if: steps.garde.outputs.active == 'true'
+        run: python scripts/keepalive.py "${{ vars.SKYTRACE_APP_URL }}"

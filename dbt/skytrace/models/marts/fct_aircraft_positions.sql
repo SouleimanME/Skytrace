@@ -20,6 +20,21 @@
     dupliquees. L'execution reste donc idempotente.
 
     Pour tout reconstruire de zero : `dbt run --full-refresh`.
+
+    AJOUTER UNE COLONNE ICI DEMANDE UNE RECONSTRUCTION COMPLETE. La lecon a
+    ete apprise en production. `on_schema_change = 'append_new_columns'`
+    ajoute bien la colonne a la table existante, mais laisse a NULL toutes
+    les lignes deja chargees : dbt ne retro-remplit pas un incremental.
+
+    Consequence en chaine, si l'on oublie : un test `not_null` sur la nouvelle
+    colonne echoue sur l'historique entier, `dbt build` s'arrete, et TOUT
+    l'aval est ignore - y compris les dimensions, qui restent a l'ancien
+    schema. Le tableau de bord se retrouve alors devant un entrepot a moitie
+    a jour et plante sur une colonne manquante.
+
+    Le tableau de bord detecte desormais cet ecart et force lui-meme un
+    `--full-refresh` (voir `schema_drift` dans dashboard/app.py), mais mieux
+    vaut le savoir en ecrivant le modele qu'en lisant une trace d'exception.
 */
 
 with positions as (

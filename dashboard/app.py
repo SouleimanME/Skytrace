@@ -570,6 +570,61 @@ def warehouse_is_ready() -> tuple[bool, str]:
 REBUILD_INTERVAL_SECONDS = 600
 
 
+#: Colonnes que le tableau de bord LIT et que l'entrepot doit donc porter.
+#: Cette liste est la contrepartie de la promesse faite par les marts : si
+#: l'une manque, ce n'est pas une requete a corriger, c'est un entrepot en
+#: retard sur le code.
+REQUIRED_COLUMNS = {
+    "marts.fct_aircraft_positions": ("emergency_kind", "is_position_stale"),
+    "marts.dim_aircraft": ("airline_source",),
+}
+
+
+def schema_drift() -> list[str]:
+    """Colonnes attendues par le code et absentes de l'entrepot.
+
+    POURQUOI CETTE VERIFICATION EXISTE. `fct_aircraft_positions` est
+    incremental. Quand une colonne y est ajoutee, `on_schema_change =
+    'append_new_columns'` l'ajoute bien a la table, mais laisse a NULL toutes
+    les lignes deja presentes : dbt ne retro-remplit pas. Un test `not_null`
+    sur cette colonne echoue alors sur l'historique entier, `dbt build`
+    s'arrete, et TOUT l'aval est ignore - y compris les dimensions, qui
+    restent a l'ancien schema.
+
+    Le tableau de bord se retrouve alors devant un entrepot a moitie a jour et
+    plante sur une colonne manquante. C'est arrive en production : le code
+    etait deploye, l'entrepot ne l'etait pas.
+
+    La reponse est une reconstruction COMPLETE, pas un rattrapage : le lac est
+    immuable et tout rebatir coute une dizaine de secondes.
+    """
+    chemin = SETTINGS.resolved_duckdb_path
+    if not chemin.exists():
+        return []
+
+    manquantes: list[str] = []
+    try:
+        with duckdb.connect(str(chemin), read_only=True) as connection:
+            for table, colonnes in REQUIRED_COLUMNS.items():
+                presentes = {
+                    ligne[0]
+                    for ligne in connection.execute(
+                        "select column_name from information_schema.columns "
+                        "where table_schema || '.' || table_name = ?",
+                        [table],
+                    ).fetchall()
+                }
+                if not presentes:
+                    # Table absente : la reconstruction normale s'en charge.
+                    continue
+                manquantes += [f"{table}.{c}" for c in colonnes if c not in presentes]
+    except duckdb.Error:
+        # Entrepot verrouille ou illisible : ce n'est pas a cette fonction de
+        # le diagnostiquer, elle repond simplement qu'elle ne sait pas.
+        return []
+    return manquantes
+
+
 def _needs_rebuild() -> bool:
     import time
 
@@ -603,8 +658,17 @@ def ensure_warehouse_built(bucket: int) -> None:
     import subprocess
     import sys
 
-    if not _needs_rebuild():
+    manquantes = schema_drift()
+    if not manquantes and not _needs_rebuild():
         return
+
+    # Une colonne attendue et absente signifie que l'entrepôt est en retard
+    # sur le code. Une reconstruction incrémentale ne rattraperait pas :
+    # l'historique resterait à NULL sur les nouvelles colonnes, et le test
+    # `not_null` ferait échouer le build, donc ignorer tout l'aval. On
+    # reconstruit entièrement - le lac est immuable, ça coûte une dizaine de
+    # secondes.
+    complet = ["--full-refresh"] if manquantes else []
 
     SETTINGS.ensure_directories()
     subprocess.run(
@@ -613,6 +677,7 @@ def ensure_warehouse_built(bucket: int) -> None:
             "-m",
             "dbt.cli.main",
             "build",
+            *complet,
             "--project-dir",
             str(SETTINGS.dbt_project_dir),
             "--profiles-dir",
@@ -2307,10 +2372,27 @@ def render() -> None:
         # pas vider la page : on garde l'affichage précédent et on le signale.
         st.warning(f"Rafraîchissement de l'entrepôt impossible : {exc}")
 
+    # Deuxième filet. Si la reconstruction a échoué, l'entrepôt peut être à
+    # moitié à jour : les colonnes lues par le code n'existent pas encore, et
+    # la requête lèverait une BinderException brute au visiteur. Un message
+    # qui dit ce qui se passe vaut mieux qu'une trace d'exception.
+    manquantes = schema_drift()
+    if manquantes:
+        st.warning(
+            "L'entrepôt est en retard sur le code : "
+            f"{', '.join(manquantes)} manque(nt). Une reconstruction complète "
+            "est nécessaire ; elle se déclenche au prochain cycle."
+        )
+        return
+
     try:
         _render_body()
     except duckdb.IOException:
         st.info("Mise à jour de l'entrepôt en cours, affichage dans un instant.")
+    except duckdb.BinderException as exc:
+        # Colonne absente malgré la vérification : le schéma a bougé entre les
+        # deux. On le dit, on ne montre pas la trace.
+        st.warning(f"Schéma inattendu dans l'entrepôt : {exc}")
 
 
 def _render_body() -> None:

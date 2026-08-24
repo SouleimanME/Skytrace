@@ -69,6 +69,19 @@ enriched as (
         squawk,
         has_special_purpose_indicator,
 
+        -- Codes de detresse normalises par l'OACI. Ils sont composes pour
+        -- etre reconnus sans ambiguite par un controleur, et la donnee ADS-B
+        -- les transporte tels quels.
+        --
+        -- A LIRE AVEC PRUDENCE : un 7500 resulte presque toujours d'une
+        -- erreur de selection sur le transpondeur, pas d'un detournement. Un
+        -- code de detresse est un signal a verifier, pas un fait etabli.
+        case
+            when squawk = '7500' then 'detournement'
+            when squawk = '7600' then 'panne radio'
+            when squawk = '7700' then 'urgence generale'
+        end                                         as emergency_kind,
+
         -- Phase de vol deduite du taux de montee. Le seuil de 1,5 m/s
         -- (~300 ft/min) filtre le bruit de mesure du transpondeur : en
         -- croisiere stabilisee le taux oscille en permanence autour de 0.
@@ -86,6 +99,19 @@ enriched as (
             when position_at is null then null
             else epoch(snapshot_at - position_at)
         end                                         as position_age_seconds,
+
+        -- Une position peut etre tres ancienne : OpenSky conserve le dernier
+        -- point connu d'un appareil sorti de couverture. La mediane observee
+        -- est d'une seconde, mais la queue de distribution monte a plusieurs
+        -- heures - et une position vieille de la veille dessinee sur une
+        -- carte du trafic courant est simplement fausse.
+        --
+        -- Le seuil de 300 s n'a rien d'arbitraire : c'est au-dela du
+        -- 99e centile mesure, donc il n'ecarte que la queue.
+        case
+            when position_at is null then false
+            else epoch(snapshot_at - position_at) > 300
+        end                                         as is_position_stale,
 
         -- audit
         ingestion_region,

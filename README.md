@@ -228,8 +228,40 @@ prédicteur détectable du NO2 au sol** - dominé par le trafic routier, le
 chauffage et la météo. Le résultat est présenté comme une corrélation
 descriptive, et l'hypothèse naïve est explicitement rejetée par les données.
 
+### Ce que vaut ce chiffre
+
+Un coefficient publié nu ne dit pas s'il est distinguable du hasard. Deux
+précautions, imposées par la structure du panel (825 heures-aéroport, mais
+seulement **14 aéroports**) :
+
+- **L'intervalle de confiance est calculé par bootstrap sur les grappes** : on
+  retire des aéroports avec remise, pas des heures. Deux heures consécutives
+  au même aéroport partagent la météo, le trafic de fond et la circulation
+  alentour ; les traiter comme des témoignages indépendants donnerait un
+  intervalle faussement étroit.
+- **Le test est une permutation à l'intérieur de chaque aéroport.** Cela
+  conserve la structure - chaque aéroport garde ses heures et ses niveaux - et
+  ne détruit que l'appariement heure par heure, c'est-à-dire exactement ce que
+  l'hypothèse nulle affirme inexistant.
+
+Résultat : **r = −0,149, IC 95 % [−0,200 ; −0,077], p ≈ 0,001**. L'intervalle
+exclut zéro : l'inversion de signe n'est pas un accident d'échantillonnage.
+
+Une nuance contre-intuitive, vérifiée en la mesurant plutôt qu'en la
+supposant. On lit souvent que le bootstrap par grappes élargit toujours
+l'intervalle. C'est faux : cela dépend de l'homogénéité de l'effet entre
+groupes. Ici l'effet intra est négatif dans 10 aéroports sur 14, avec un
+écart-type de 0,175 seulement, donc l'intervalle par grappes se révèle
+**plus étroit** que le naïf. Sur un panel où les groupes divergeraient, il
+serait bien plus large. Les deux cas sont couverts par un test.
+
+**Limite assumée** : 14 grappes, c'est peu, et un intervalle calculé sur si
+peu de groupes est lui-même incertain. C'est mieux qu'un chiffre nu, ce n'est
+pas une étude épidémiologique.
+
 Analyse reproductible (`python scripts/analyse_qualite_air.py`), rapport
 détaillé et figure : [`docs/analyse_trafic_qualite_air.md`](docs/analyse_trafic_qualite_air.md).
+Estimateurs et tests : [`src/skytrace/stats.py`](src/skytrace/stats.py).
 
 ## Enrichissement flotte : compagnies et constructeurs
 
@@ -237,20 +269,98 @@ Une troisième source croise deux référentiels gratuits pour donner du sens
 aux appareils observés :
 
 - **Base aéronefs OpenSky** (~500 000 appareils) : type réel, constructeur,
-  modèle et opérateur par adresse OACI 24 bits.
-- **OpenFlights** : le préfixe de l'indicatif (AFR, BAW, DLH…) identifie la
-  compagnie.
+  modèle, opérateur et code d'exploitant par adresse OACI 24 bits.
+- **OpenFlights** : le code OACI d'exploitant donne le nom de la compagnie.
 
-`dim_aircraft` n'est plus seulement dérivée de l'observation : elle porte le
-constructeur et la compagnie. Cela débloque des analyses lisibles :
+### Rattacher un appareil à sa compagnie : deux clés valent mieux qu'une
+
+La première version déduisait la compagnie du seul préfixe d'indicatif. C'est
+la clé la plus couvrante et la plus bruyante : les codes se réutilisent, et
+OpenFlights, figé depuis des années, contient des entrées périmées. Le
+tableau de bord affichait ainsi **Tiphook PLC**, un loueur de conteneurs,
+parmi les compagnies de Francfort.
+
+Trois règles, vérifiées sur la donnée :
+
+1. **Le code d'exploitant déclaré prime sur le préfixe d'indicatif.** Il
+   couvre un tiers des appareils observés, mais il est déclaré et non deviné.
+   Les appareils étiquetés « O Air » déclarent DLH : ce sont des Lufthansa.
+2. **Un préfixe n'est retenu que s'il est attesté**, c'est-à-dire s'il sert de
+   code d'exploitant à au moins un appareil de la base. Un code que personne
+   ne déclare est une collision, pas une compagnie. Cette règle écarte un
+   rattachement sur cinq : « 12 North », « Regional Air Iceland », « All
+   Spain ».
+3. **Une entrée OpenFlights périmée cède devant l'exploitant nommé** dans la
+   base aéronefs. C'est ce qui transforme « Tiphook PLC » en AeroLogic.
+
+La colonne `airline_source` dit laquelle des deux clés a tranché, pour qu'un
+classement puisse distinguer un rattachement déclaré d'un rattachement déduit.
+Le nom canonique reste celui d'OpenFlights partout ailleurs : les deux sources
+concordent dans 90 % des cas, et les 10 % restants sont des variantes
+d'écriture qui fragmenteraient les agrégats.
+
+Cela débloque des analyses lisibles :
 
 - **Part de marché des compagnies par aéroport** (`fct_airline_airport_activity`) :
   à Paris-CDG, Air France domine devant TNT, FedEx et Delta.
 - **Airbus vs Boeing** sur l'ensemble des appareils vus : répartition à peu
   près équilibrée (~34 % / ~35 %), le reste en Embraer, Bombardier, ATR.
+- **Âge des flottes par compagnie** : sur les compagnies d'au moins 25
+  appareils datés, l'écart va d'environ 7 ans à 33 ans, soit un facteur 4,5.
+  Le fret et le régional exploitent des appareils convertis en fin de vie, le
+  low-cost renouvelle pour la consommation de carburant. Biais assumé et
+  affiché : l'année de construction n'est connue que pour la moitié de la base.
+
+## Le rythme du monde, en heure solaire
+
+La tendance horaire du tableau de bord est en UTC, ce qui mélange tous les
+fuseaux : le matin japonais y tombe au même endroit que la nuit américaine, et
+le cycle s'annule. En ramenant chaque position à l'heure **solaire** de sa
+longitude (quinze degrés par heure), le rythme réapparaît : le trafic culmine
+vers 10 h locale et tombe au plus bas vers 1 h, dans un rapport de près de
+**12 pour 1**.
+
+L'heure solaire ignore les fuseaux administratifs et l'heure d'été. Pour lire
+un cycle jour / nuit c'est précisément ce qu'il faut, puisque le soleil ne
+connaît pas les décrets.
+
+## Deux signaux que la donnée portait sans les montrer
+
+- **Codes de détresse.** Le transpondeur transmet un code à quatre chiffres,
+  et l'OACI en réserve trois : 7500 détournement, 7600 panne radio, 7700
+  urgence générale. Ils sont désormais traduits dans `emergency_kind` et
+  listés dans le tableau de bord. À lire comme un signal et non comme un
+  fait : un 7500 résulte presque toujours d'une erreur de sélection.
+- **Fraîcheur de la position.** `position_age_seconds` mesure l'écart entre
+  l'instant du relevé et la dernière position émise. La médiane est d'une
+  seconde, mais la queue de distribution monte à plusieurs heures : OpenSky
+  conserve le dernier point connu d'un appareil sorti de couverture. Au-delà
+  de 300 secondes, soit au-delà du 99e centile mesuré, la position est
+  marquée `is_position_stale` et **écartée de la carte** plutôt que dessinée
+  comme du trafic courant. Le nombre de positions écartées est affiché.
 
 Le tableau de bord expose les deux (sélecteur d'aéroport + camembert
 constructeurs).
+
+## Le tableau de bord mesure aussi le pipeline
+
+Un onglet **Coulisses** rassemble ce qu'un tableau de bord montre rarement :
+ce qu'il vaut lui-même.
+
+- **Ponctualité réelle de la collecte.** Le cron est déclaré toutes les
+  30 minutes ; l'écart médian observé est de 73 minutes, et 15 % seulement des
+  intervalles tiennent dans les 45 minutes. GitHub exécute les tâches
+  planifiées « au mieux » et dépriorise les dépôts publics peu actifs. Les
+  seuils du bandeau de fraîcheur sont calibrés sur cette distribution mesurée,
+  pas sur la cadence théorique.
+- **Couverture du réseau, chiffrée.** 85 % des positions viennent de deux
+  régions, l'Europe et l'Amérique du Nord. La carte mesure autant la densité
+  des récepteurs bénévoles que celle du trafic : comparer des volumes entre
+  régions n'a pas de sens, et les analyses restent valables à l'intérieur
+  d'une région, pas entre elles.
+- **Comment c'est construit**, et ce que le tableau de bord ne prétend pas
+  être : ni du temps réel, ni des trajectoires, ni un recensement. Chaque
+  limite est mesurée dans l'onglet plutôt qu'affirmée.
 
 ## Qualité des données
 

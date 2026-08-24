@@ -52,6 +52,23 @@ models:
           - accepted_range:
               arguments:
                 min_value: 0
+      - name: is_position_stale
+        description: >
+          Position vieille de plus de 300 s, soit au-dela du 99e centile
+          mesure. OpenSky conserve le dernier point connu d'un appareil sorti
+          de couverture : ces positions existent, mais les dessiner sur une
+          carte du trafic courant serait faux.
+        data_tests:
+          - not_null
+      - name: emergency_kind
+        description: >
+          Code de detresse OACI, traduit. Nul dans l'immense majorite des cas.
+          A lire comme un signal a verifier et non comme un fait etabli : un
+          7500 resulte presque toujours d'une erreur de selection.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["detournement", "panne radio", "urgence generale"]
 
   - name: fct_traffic_hourly
     description: >
@@ -140,6 +157,25 @@ models:
       - name: last_seen_at
         data_tests:
           - not_null
+      - name: airline_source
+        description: >
+          Origine du rattachement a une compagnie : "code exploitant" quand la
+          base aeronefs le declare, "indicatif" quand il est deduit du prefixe
+          d'indicatif, nul quand aucune des deux cles ne designe une compagnie
+          connue. Permet de ponderer la confiance d'un classement.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ["code exploitant", "indicatif"]
+      - name: airline_icao
+        description: >
+          Code OACI de l'exploitant. Un rattachement sans nom de compagnie
+          reste possible : le code peut etre atteste sans figurer dans
+          OpenFlights.
+      - name: airline_name
+        description: >
+          Nom canonique OpenFlights, sauf lorsque celui-ci est declare perime
+          et contredit par l'exploitant nomme dans la base aeronefs.
 
   - name: dim_airport
     description: >
@@ -215,8 +251,12 @@ models:
   - name: fct_airline_airport_activity
     description: >
       Activite par compagnie et par aeroport (part de marche des compagnies).
-      airline_name est nul quand l'indicatif ne correspond a aucune compagnie
-      connue.
+      Le rattachement provient de dim_aircraft, qui porte la regle metier ;
+      il n'est pas rededuit ici. airline_icao et airline_name sont nuls quand
+      aucune cle ne designe une compagnie connue - aviation d'affaires,
+      militaire, indicatifs non standard. Ces lignes sont CONSERVEES : elles
+      representent du trafic reel, et les exclure gonflerait les parts de
+      marche des compagnies identifiees.
     columns:
       - name: airport_id
         data_tests:
@@ -225,9 +265,12 @@ models:
               arguments:
                 to: ref('dim_airport')
                 field: airport_id
-      - name: airline_icao
+      - name: airline_source
+        description: Origine du rattachement, reprise de dim_aircraft.
         data_tests:
-          - not_null
+          - accepted_values:
+              arguments:
+                values: ["code exploitant", "indicatif"]
       - name: distinct_aircraft
         data_tests:
           - not_null

@@ -8,13 +8,19 @@
     Activite par compagnie et par aeroport. Grain : un aeroport, une compagnie.
 
     Construit a partir du rapprochement spatial (int_positions_near_airports) :
-    chaque appareil detecte pres d'un aeroport est rattache a sa compagnie via
-    le prefixe de son indicatif. Repond a "part de marche des compagnies a
-    CDG / Orly / ...".
+    chaque appareil detecte pres d'un aeroport est rattache a sa compagnie.
 
-    `airline_name` est nul quand le prefixe ne correspond a aucune compagnie
-    connue (aviation d'affaires, militaire, indicatifs non standard) : le
-    tableau de bord peut alors filtrer sur les compagnies identifiees.
+    LE RATTACHEMENT N'EST PAS REFAIT ICI. Cette table lisait auparavant le
+    prefixe d'indicatif pour son propre compte, ce qui dupliquait une regle
+    metier deja portee par `dim_aircraft`. La duplication a coute cher : quand
+    la regle a ete corrigee dans la dimension, ce modele a continue d'afficher
+    "Tiphook PLC" - un loueur de conteneurs - parmi les compagnies de
+    Francfort. Une definition metier vit a UN endroit ; ailleurs on la lit.
+
+    `airline_name` est nul quand aucune des deux cles de `dim_aircraft` ne
+    designe une compagnie connue (aviation d'affaires, militaire, indicatifs
+    non standard) : le tableau de bord peut alors filtrer sur les compagnies
+    identifiees.
 */
 
 with proximity as (
@@ -23,50 +29,46 @@ with proximity as (
 
 ),
 
-airlines as (
-
-    select * from {{ ref('dim_airline') }}
-
-),
-
-tagged as (
+aircraft as (
 
     select
-        airport_id,
-        airport_icao_code,
-        airport_iata_code,
-        airport_label,
-        airport_iso_country,
-        upper(left(trim(callsign), 3))       as airline_icao,
-        aircraft_icao24
-    from proximity
-    where callsign is not null
-      and length(trim(callsign)) >= 3
+        aircraft_icao24,
+        airline_icao,
+        airline_name,
+        airline_country,
+        airline_source
+    from {{ ref('dim_aircraft') }}
 
 )
 
 select
-    tagged.airport_id,
-    tagged.airport_icao_code,
-    tagged.airport_iata_code,
-    tagged.airport_label,
-    tagged.airport_iso_country,
-    tagged.airline_icao,
-    airlines.airline_name,
-    airlines.country                          as airline_country,
+    proximity.airport_id,
+    proximity.airport_icao_code,
+    proximity.airport_iata_code,
+    proximity.airport_label,
+    proximity.airport_iso_country,
+    aircraft.airline_icao,
+    aircraft.airline_name,
+    aircraft.airline_country,
 
-    count(distinct tagged.aircraft_icao24)    as distinct_aircraft,
+    -- D'ou vient le rattachement, conserve jusqu'ici : un classement de parts
+    -- de marche n'a pas le meme poids selon qu'il repose sur des exploitants
+    -- declares ou sur des indicatifs interpretes.
+    aircraft.airline_source,
+
+    count(distinct proximity.aircraft_icao24) as distinct_aircraft,
     count(*)                                  as observation_count
 
-from tagged
-left join airlines
-    on tagged.airline_icao = airlines.airline_icao
+from proximity
+inner join aircraft
+    on proximity.aircraft_icao24 = aircraft.aircraft_icao24
 group by
-    tagged.airport_id,
-    tagged.airport_icao_code,
-    tagged.airport_iata_code,
-    tagged.airport_label,
-    tagged.airport_iso_country,
-    tagged.airline_icao,
-    airlines.airline_name,
-    airlines.country
+    proximity.airport_id,
+    proximity.airport_icao_code,
+    proximity.airport_iata_code,
+    proximity.airport_label,
+    proximity.airport_iso_country,
+    aircraft.airline_icao,
+    aircraft.airline_name,
+    aircraft.airline_country,
+    aircraft.airline_source

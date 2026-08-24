@@ -2,7 +2,7 @@
 
 Le tableau de bord ne connaît que les tables `marts`. Il n'ouvre jamais un
 fichier Parquet et ne recalcule jamais une agrégation : c'est le contrat de
-la couche gold. Conséquence pratique - si une definition métier change, on
+la couche gold. Conséquence pratique - si une définition métier change, on
 la corrige dans un modèle dbt, testé et versionné, pas dans une page.
 
 Le pipeline est batch, pas streaming : la série temporelle ne se
@@ -23,7 +23,6 @@ import html
 import math
 import os
 import sys
-from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -55,6 +54,7 @@ for _key in (
 
 from skytrace.config import get_settings  # noqa: E402
 from skytrace.photos import fetch_photo, looks_military  # noqa: E402
+from skytrace.stats import estimate  # noqa: E402
 from skytrace.warehouse.duck import WAREHOUSE_TIMEZONE  # noqa: E402
 
 SETTINGS = get_settings()
@@ -272,6 +272,28 @@ hr{ border:none; height:1px; background:linear-gradient(90deg,transparent,var(--
 [data-testid="stSidebar"] h2{ font-size:.82rem; letter-spacing:.16em; color:var(--cyan);}
 [data-testid="stSidebar"] [data-testid="stCaptionContainer"] p{ font-size:.75rem; color:var(--dim);}
 
+/* -- barre d'onglets -- */
+/* Les onglets par defaut de Streamlit sont un texte gris souligne : ils
+   passent pour du texte et non pour une navigation. Ici ils portent la
+   meme typographie que les titres de section, et l'onglet actif est
+   marque par la couleur ET par un filet, pas par la couleur seule. */
+[data-testid="stTabs"] [role="tablist"]{
+  gap:4px; border-bottom:1px solid var(--line); margin-bottom:.5rem;
+}
+[data-testid="stTabs"] [role="tab"]{
+  font-family:'Inter','Segoe UI',sans-serif; font-weight:600;
+  letter-spacing:.1em; text-transform:uppercase; font-size:.78rem;
+  color:var(--dim); padding:8px 16px; border-radius:8px 8px 0 0;
+}
+[data-testid="stTabs"] [role="tab"]:hover{ color:var(--text); background:rgba(34,211,238,0.05); }
+[data-testid="stTabs"] [role="tab"][aria-selected="true"]{
+  color:var(--cyan); background:rgba(34,211,238,0.08);
+}
+/* Le surlignage de l'onglet actif : Streamlit le dessine en rouge par
+   defaut, ce qui jure et suggere une erreur. */
+[data-testid="stTabs"] [data-baseweb="tab-highlight"]{ background:var(--cyan); }
+[data-testid="stTabs"] [data-baseweb="tab-border"]{ background:transparent; }
+
 /* ------------------------------------------------------------------ */
 /* Petits ecrans                                                       */
 /*                                                                     */
@@ -319,6 +341,13 @@ hr{ border:none; height:1px; background:linear-gradient(90deg,transparent,var(--
      dans son propre cadre plutot que d'etirer la page. */
   [data-testid="stDataFrame"]{ overflow-x:auto; }
 
+  /* Cinq onglets ne tiennent pas sur 375 pixels : ils defilent
+     horizontalement plutot que de se comprimer illisiblement. */
+  [data-testid="stTabs"] [role="tablist"]{ overflow-x:auto; flex-wrap:nowrap; }
+  [data-testid="stTabs"] [role="tab"]{
+    padding:7px 11px; font-size:.7rem; letter-spacing:.06em; white-space:nowrap;
+  }
+
   /* Les sections repliees sont des titres de section : elles doivent en
      avoir l'allure, pas celle d'un widget Streamlit par defaut. */
   [data-testid="stExpander"] summary p{
@@ -342,17 +371,17 @@ HANDHELD_HINTS = ("android", "iphone", "ipod", "ipad", "windows phone", "mobile"
 
 
 def is_handheld() -> bool:
-    """Vrai si la page est servie a un telephone ou une tablette.
+    """Vrai si la page est servie à un telephone ou une tablette.
 
-    La mise en forme se regle en CSS, mais deux choses ne s'y pretent pas :
-    le zoom initial de la carte et sa hauteur sont des valeurs passees a
-    deck.gl, pas des proprietes de style. L'agent utilisateur est une
+    La mise en forme se règle en CSS, mais deux choses ne s'y pretent pas :
+    le zoom initial de la carte et sa hauteur sont des valeurs passées a
+    deck.gl, pas des propriétés de style. L'agent utilisateur est une
     approximation - il se falsifie et se trompe sur les cas limites - mais
-    l'erreur reste sans consequence : au pire, un cadrage un peu large.
+    l'erreur reste sans conséquence : au pire, un cadrage un peu large.
     """
     try:
         agent = (st.context.headers.get("User-Agent") or "").lower()
-    except Exception:  # noqa: BLE001 - hors contexte de requete
+    except Exception:  # noqa: BLE001 - hors contexte de requête
         return False
     return any(hint in agent for hint in HANDHELD_HINTS)
 
@@ -438,31 +467,12 @@ ICON_NAME = "avion"
 AIRCRAFT_ICON_ATLAS, AIRCRAFT_ICON_MAPPING = aircraft_icon()
 
 
-@contextmanager
-def section(title: str, *, collapsible: bool = False, heading: bool = True):
-    """Section de page, repliable sur petit ecran.
-
-    Sur telephone, la page fait huit ecrans de haut : replier les sections
-    secondaires evite d'imposer un defilement interminable pour atteindre le
-    pied de page, sans rien retirer a personne - tout reste a une tape. Sur
-    grand ecran, la mise en page ne change pas.
-    """
-    st.divider()
-    if collapsible and is_handheld():
-        with st.expander(title, expanded=False):
-            yield
-    else:
-        if heading:
-            st.subheader(title)
-        yield
-
-
 def chart_config() -> dict:
     """Options du rendu Plotly, adaptees au toucher.
 
-    La barre d'outils n'apparait qu'au survol sur un ecran de bureau, mais
-    reste affichee en permanence sur un ecran tactile, ou elle recouvre la
-    legende. Aucun de ses boutons - zoom, lasso, capture - n'a de sens au
+    La barre d'outils n'apparait qu'au survol sur un écran de bureau, mais
+    reste affichee en permanence sur un écran tactile, ou elle recouvre la
+    légende. Aucun de ses boutons - zoom, lasso, capture - n'a de sens au
     doigt : on la retire.
     """
     return {"displayModeBar": not is_handheld(), "responsive": True}
@@ -511,9 +521,9 @@ def style_fig(fig, height: int | None = None):
         )
 
     if height:
-        # Les hauteurs sont calibrees pour un ecran large. Sur telephone,
+        # Les hauteurs sont calibrees pour un écran large. Sur telephone,
         # les conserver telles quelles ferait de la page un couloir : chaque
-        # graphe occuperait la moitie de l'ecran, et il y en a huit.
+        # graphe occuperait la moitie de l'écran, et il y en a huit.
         fig.update_layout(height=int(height * 0.72) if is_handheld() else height)
     return fig
 
@@ -838,6 +848,62 @@ def selection_scope(positions: pd.DataFrame) -> str:
     return f"{snapshot:%Y%m%d%H%M%S}_{len(positions)}"
 
 
+@st.cache_data(ttl=90, show_spinner=False)
+def aircraft_history(icao24: str) -> pd.DataFrame:
+    """Relevés successifs d'un appareil donné.
+
+    Un appareil n'est pas vu une fois : la médiane est de cinq relevés, et le
+    plus suivi en compte quarante-trois. La fiche montrait pourtant un
+    instant isolé, alors que la profondeur temporelle est justement ce que ce
+    projet accumule. La requête est bornée à l'adresse OACI, donc elle lit
+    quelques dizaines de lignes.
+    """
+    return load(
+        f"""
+        select snapshot_at, barometric_altitude_ft, ground_speed_kt, flight_phase
+        from marts.fct_aircraft_positions
+        where aircraft_icao24 = '{icao24}'
+        order by snapshot_at
+        """  # noqa: S608 - l'adresse OACI est validee par l'appelant
+    )
+
+
+def render_history(icao24: str) -> None:
+    """Courbe d'altitude de l'appareil, sur toute la fenêtre d'observation."""
+    # Une adresse OACI 24 bits est SIX caractères hexadecimaux et rien
+    # d'autre. La valeur vient d'une sélection sur la carte, donc de notre
+    # propre donnée, mais elle finit dans une requête : on la valide plutôt
+    # que de faire confiance a sa provenance.
+    if len(icao24) != 6 or any(c not in "0123456789abcdef" for c in icao24.lower()):
+        return
+
+    historique = aircraft_history(icao24.lower())
+    if len(historique) < 2:
+        st.caption(
+            "Un seul relevé pour cet appareil : la courbe apparaît dès le "
+            "deuxième passage du collecteur."
+        )
+        return
+
+    courbe = px.line(
+        historique,
+        x="snapshot_at",
+        y="barometric_altitude_ft",
+        markers=True,
+        labels={"snapshot_at": "", "barometric_altitude_ft": "Altitude (ft)"},
+    )
+    courbe.update_traces(line={"width": 2.2, "color": "#22d3ee"}, marker={"size": 5})
+    style_fig(courbe, height=190)
+    courbe.update_layout(margin={"l": 8, "r": 8, "t": 6, "b": 4}, showlegend=False)
+    st.plotly_chart(courbe, width="stretch", config=chart_config())
+    st.caption(
+        f"{len(historique)} relevés de cet appareil depuis le début de la "
+        "collecte. Les points ne sont pas une trajectoire : entre deux "
+        "relevés, l'appareil a parcouru des centaines de kilomètres dont rien "
+        "n'est observé."
+    )
+
+
 def _picked_aircraft(selection) -> dict | None:
     """Extrait l'appareil clique d'un événement de sélection deck.gl."""
     try:
@@ -979,6 +1045,211 @@ def render_aircraft_card(selection, positions: pd.DataFrame) -> None:
                 "nom de l'exploitant : elle peut se tromper dans les deux sens."
             )
 
+    if icao24:
+        render_history(icao24)
+
+
+#: Ce que chaque code de detresse signifie, et la couleur qui va avec.
+EMERGENCY_STYLE = {
+    "urgence generale": ("Urgence", "#fb7185"),
+    "panne radio": ("Panne radio", "#fbbf24"),
+    "detournement": ("Détournement", "#a78bfa"),
+}
+
+
+def render_signal_section() -> None:
+    """Détresses déclarées et qualité du signal reçu.
+
+    Deux choses que la donnée porte depuis le début sans que rien ne les
+    montre : le code transpondeur, et l'age de la position transmise. La
+    seconde est une mesure de la qualité de notre propre donnée - c'est
+    rarement affiche, et c'est pourtant ce qui dit si la carte est fiable.
+    """
+    gauche, droite = st.columns([1, 1])
+
+    with gauche:
+        st.subheader("Détresses déclarées")
+        detresses = load(
+            """
+            select
+                p.emergency_kind, p.snapshot_at, p.callsign, p.origin_country,
+                p.aircraft_icao24, a.airline_name, a.aircraft_type
+            from marts.fct_aircraft_positions p
+            left join marts.dim_aircraft a using (aircraft_icao24)
+            where p.emergency_kind is not null
+            order by p.snapshot_at desc
+            """
+        )
+        if detresses.empty:
+            st.info("Aucun code de détresse observé sur la fenêtre de collecte.")
+        else:
+            compte = detresses.groupby("emergency_kind")["aircraft_icao24"].nunique()
+            colonnes = st.columns(len(EMERGENCY_STYLE))
+            for colonne, (code, (libelle, _)) in zip(
+                colonnes, EMERGENCY_STYLE.items(), strict=True
+            ):
+                colonne.metric(libelle, int(compte.get(code, 0)))
+
+            table = detresses.assign(
+                Code=detresses["emergency_kind"].map(lambda k: EMERGENCY_STYLE[k][0]),
+                Indicatif=detresses["callsign"].fillna("(sans indicatif)"),
+                Compagnie=detresses["airline_name"].fillna("-"),
+            )[["Code", "Indicatif", "Compagnie", "snapshot_at"]]
+            st.dataframe(
+                table.rename(columns={"snapshot_at": "Relevé"}),
+                width="stretch",
+                hide_index=True,
+                height=210,
+            )
+        st.caption(
+            "Les codes 7500, 7600 et 7700 sont les trois codes de détresse "
+            "normalisés par l'OACI. **À lire comme un signal, pas comme un "
+            "fait** : un 7500 résulte presque toujours d'une erreur de "
+            "sélection sur le transpondeur, pas d'un détournement."
+        )
+
+    with droite:
+        st.subheader("Qualité du signal reçu")
+        fraicheur = load(
+            """
+            select
+                median(position_age_seconds)              as mediane,
+                quantile(position_age_seconds, 0.90)      as p90,
+                quantile(position_age_seconds, 0.99)      as p99,
+                max(position_age_seconds)                 as maximum,
+                avg(case when is_position_stale then 1.0 else 0.0 end) as part_perimee
+            from marts.fct_aircraft_positions
+            """
+        ).iloc[0]
+
+        haut, bas = st.columns(2)
+        haut.metric("Âge médian", f"{fraicheur['mediane']:.0f} s")
+        bas.metric("9e décile", f"{fraicheur['p90']:.0f} s")
+        haut, bas = st.columns(2)
+        haut.metric("99e centile", f"{fraicheur['p99']:.0f} s")
+        bas.metric("Écartées", f"{100 * fraicheur['part_perimee']:.2f} %")
+
+        distribution = load(
+            """
+            select
+                case
+                    when position_age_seconds <= 5   then '5 s'
+                    when position_age_seconds <= 30  then '30 s'
+                    when position_age_seconds <= 60  then '1 min'
+                    when position_age_seconds <= 300 then '5 min'
+                    else '> 5 min'
+                end as tranche,
+                count(*) as positions
+            from marts.fct_aircraft_positions
+            group by 1
+            """
+        )
+        ordre = ["5 s", "30 s", "1 min", "5 min", "> 5 min"]
+        distribution["tranche"] = pd.Categorical(distribution["tranche"], ordre, ordered=True)
+        barres = px.bar(
+            distribution.sort_values("tranche"),
+            x="tranche",
+            y="positions",
+            labels={"tranche": "Position transmise il y à moins de", "positions": ""},
+        )
+        # La dernière tranche est celle qu'on ecarte de la carte : elle se
+        # distingue, sinon le graphe ne dit pas ce qui a ete decide.
+        barres.update_traces(
+            marker={
+                "color": [
+                    "#fb7185" if t == "> 5 min" else "#22d3ee"
+                    for t in distribution.sort_values("tranche")["tranche"]
+                ]
+            }
+        )
+        style_fig(barres, height=240)
+        st.plotly_chart(barres, width="stretch", config=chart_config())
+        st.caption(
+            f"Écart entre l'instant du relevé et la dernière position émise par "
+            f"l'appareil. La médiane est d'une seconde, mais la queue de "
+            f"distribution monte à {fraicheur['maximum'] / 3600:.0f} h : OpenSky "
+            "conserve le dernier point connu d'un appareil sorti de couverture. "
+            "Ces positions sont **écartées de la carte** plutôt que dessinées "
+            "comme du trafic courant."
+        )
+
+
+def render_fleet_age() -> None:
+    """Age des flottes par compagnie.
+
+    Deuxième question chiffree du projet, après la corrélation trafic / NO2.
+    Elle n'était pas exploitable tant que le rattachement aux compagnies
+    reposait sur le seul préfixe d'indicatif : le classement sortait des
+    compagnies disparues depuis 1989.
+
+    Le biais de sélection est réel et affiche : l'année de construction n'est
+    connue que pour la moitie de la base aéronefs, et rien ne garantit que
+    les appareils dates soient representatifs des autres.
+    """
+    ages = load(
+        """
+        select
+            airline_name                            as compagnie,
+            count(*)                                as appareils,
+            round(2026 - avg(built_year), 1)        as age_moyen
+        from marts.dim_aircraft
+        where airline_name is not null and built_year is not null
+        group by 1
+        having count(*) >= 25
+        order by age_moyen desc
+        """
+    )
+    if len(ages) < 6:
+        st.caption(
+            "Pas encore assez d'appareils datés par compagnie pour comparer "
+            "les flottes. La base se remplit avec la collecte."
+        )
+        return
+
+    st.subheader("Âge des flottes")
+
+    extremes = pd.concat([ages.head(6), ages.tail(6)]).drop_duplicates(subset="compagnie")
+    graphe = px.bar(
+        extremes.sort_values("age_moyen"),
+        x="age_moyen",
+        y="compagnie",
+        orientation="h",
+        labels={"age_moyen": "Âge moyen de la flotte (années)", "compagnie": ""},
+        text="appareils",
+    )
+    # Les deux extremes racontent l'histoire : le fret vole vieux, le
+    # low-cost vole neuf. Une couleur par groupe le rend lisible d'un coup.
+    mediane = ages["age_moyen"].median()
+    graphe.update_traces(
+        marker={
+            "color": [
+                "#fbbf24" if a > mediane else "#34d399"
+                for a in extremes.sort_values("age_moyen")["age_moyen"]
+            ]
+        },
+        texttemplate="%{text} appareils",
+        textposition="outside",
+        textfont={"color": "#9fb3d1", "size": 10},
+        cliponaxis=False,
+    )
+    style_fig(graphe, height=430)
+    graphe.update_layout(margin={"l": 8, "r": 70, "t": 8, "b": 6})
+    st.plotly_chart(graphe, width="stretch", config=chart_config())
+
+    plus_vieille = ages.iloc[0]
+    plus_jeune = ages.iloc[-1]
+    st.caption(
+        f"Sur {len(ages)} compagnies d'au moins 25 appareils datés, l'écart va "
+        f"de **{plus_jeune['age_moyen']:.0f} ans** ({plus_jeune['compagnie']}) à "
+        f"**{plus_vieille['age_moyen']:.0f} ans** ({plus_vieille['compagnie']}), "
+        f"soit un facteur {plus_vieille['age_moyen'] / plus_jeune['age_moyen']:.1f}. "
+        "Le fret et le régional exploitent des appareils convertis en fin de "
+        "vie ; le low-cost renouvelle pour la consommation de carburant. "
+        "**Biais à connaître** : l'année de construction n'est renseignée que "
+        "pour la moitié de la base aéronefs, et les appareils datés ne sont "
+        "pas forcément représentatifs des autres."
+    )
+
 
 def apply_filters(frame: pd.DataFrame) -> pd.DataFrame:
     """Restreint un tableau de positions aux filtres actifs."""
@@ -1022,94 +1293,8 @@ def status_chip(level: str, text: str) -> None:
     )
 
 
-@st.fragment(run_every=interval_seconds if auto_refresh else None)
-def render() -> None:
-    """Corps du tableau de bord, réexécute à chaque rafraîchissement.
-
-    Isole dans un fragment : Streamlit ne rejoue que cette fonction, sans
-    réinitialiser les commandes de la barre latérale.
-
-    C'est aussi ICI que l'entrepôt est rafraîchi, et non dans le corps du
-    script. Un `run_every` ne rejoue QUE le fragment : place au niveau du
-    script, la reconstruction n'aurait lieu qu'au chargement initial de la
-    page, et le tableau de bord afficherait indéfiniment des données figées
-    pendant que le collecteur, lui, continue d'alimenter le lac.
-    """
-    import time as _time
-
-    try:
-        ensure_warehouse_built(int(_time.time() // REBUILD_INTERVAL_SECONDS))
-    except Exception as exc:  # noqa: BLE001 - une reconstruction ratée ne doit
-        # pas vider la page : on garde l'affichage précédent et on le signale.
-        st.warning(f"Rafraîchissement de l'entrepôt impossible : {exc}")
-
-    try:
-        _render_body()
-    except duckdb.IOException:
-        st.info("Mise à jour de l'entrepôt en cours, affichage dans un instant.")
-
-
-def _render_body() -> None:
-    # -- Fraîcheur ---------------------------------------------------------
-    overview = load(
-        """
-        select
-            count(*)                        as positions,
-            count(distinct aircraft_icao24) as aeronefs,
-            count(distinct snapshot_at)     as snapshots,
-            min(snapshot_at)                as debut,
-            max(snapshot_at)                as fin
-        from marts.fct_aircraft_positions
-        """
-    ).iloc[0]
-
-    airports_active = load(
-        "select count(distinct airport_id) as n from marts.fct_airport_activity"
-    ).iloc[0]["n"]
-
-    last_seen = overview["fin"]
-    age_minutes = (datetime.now(UTC) - last_seen.to_pydatetime()).total_seconds() / 60
-    span_hours = (overview["fin"] - overview["debut"]).total_seconds() / 3600
-
-    # Seuils calibrés sur le comportement RÉEL du cron GitHub Actions, pas sur
-    # sa cadence théorique : mesure faite sur ce dépôt, les écarts entre deux
-    # collectés vont de 50 min à plus de 3 h (GitHub exécute les crons "au
-    # mieux"). Des seuils calqués sur les 30 min nominales afficheraient une
-    # alerte en permanence, ce qui reviendrait à n'alerter sur rien.
-    if age_minutes <= NOMINAL_MAX_MINUTES:
-        status_chip(
-            "ok",
-            f"SIGNAL NOMINAL // dernier relevé il y a {age_minutes:.0f} min "
-            f"({last_seen:%H:%M:%S} UTC)",
-        )
-    elif age_minutes <= DEGRADED_MAX_MINUTES:
-        status_chip(
-            "warn",
-            f"COLLECTE RETARDÉE // dernier relevé il y a {age_minutes:.0f} min "
-            "(le cron GitHub est fréquemment différé)",
-        )
-    else:
-        status_chip(
-            "err",
-            f"SIGNAL PERDU // aucune donnée depuis {age_minutes / 60:.1f} h - "
-            "vérifier le workflow Collecte planifiée (onglet Actions)",
-        )
-
-    # -- Indicateurs clés --------------------------------------------------
-    # Le conteneur nomme produit une classe `st-key-indicateurs` : c'est le
-    # seul point d'accroche CSS fiable pour ne viser que ce bloc. Sur petit
-    # ecran, ses cinq colonnes se rangent par deux au lieu de s'empiler, ce
-    # qui rend 300 pixels de defilement.
-    with st.container(key="indicateurs"):
-        columns = st.columns(5)
-        columns[0].metric("Positions", f"{int(overview['positions']):,}".replace(",", " "))
-        columns[1].metric("Aéronefs", f"{int(overview['aeronefs']):,}".replace(",", " "))
-        columns[2].metric("Snapshots", f"{int(overview['snapshots']):,}".replace(",", " "))
-        columns[3].metric("Aéroports", int(airports_active))
-        columns[4].metric("Historique", f"{span_hours:.1f} h")
-
-    st.divider()
-
+def render_snapshot_series() -> None:
+    """Trafic relevé par relevé : la granularité réelle de la collecte."""
     # -- Série par snapshot ------------------------------------------------
     st.subheader("Trafic relevé par relevé")
 
@@ -1166,25 +1351,42 @@ def _render_body() -> None:
 
     st.divider()
 
+
+def render_radar() -> None:
+    """Carte du dernier relevé, fiche appareil et répartition des phases."""
     # -- Carte du dernier relevé -------------------------------------------
     st.subheader("Radar // dernier relevé")
 
     # Jointure avec la dimension aéronef : elle apporte le constructeur et la
     # compagnie, qui servent de dimensions de filtrage sur la carte.
+    # Les positions perimees sont ECARTEES de la carte. OpenSky conserve le
+    # dernier point connu d'un appareil sorti de couverture : dessiner sur une
+    # carte du trafic courant un point vieux de plusieurs heures, c'est
+    # affirmer une presence qui n'a pas ete observée. Le compte des positions
+    # ecartees est affiche sous la carte plutôt que passe sous silence.
     latest_all = load(
         """
         select
             p.latitude, p.longitude, p.callsign, p.origin_country, p.heading_deg,
             p.barometric_altitude_ft, p.ground_speed_kt, p.flight_phase,
-            p.aircraft_icao24, p.snapshot_at,
+            p.aircraft_icao24, p.snapshot_at, p.emergency_kind,
             coalesce(a.manufacturer_group, 'Inconnu') as manufacturer_group,
             a.airline_name, a.registration, a.aircraft_type, a.manufacturer,
-            a.model, a.operator, a.built_year, a.airline_country
+            a.model, a.operator, a.built_year, a.airline_country, a.airline_source
         from marts.fct_aircraft_positions p
         left join marts.dim_aircraft a using (aircraft_icao24)
         where p.snapshot_at = (select max(snapshot_at) from marts.fct_aircraft_positions)
+          and not p.is_position_stale
         """
     )
+    ecartees = load(
+        """
+        select count(*) as n
+        from marts.fct_aircraft_positions
+        where snapshot_at = (select max(snapshot_at) from marts.fct_aircraft_positions)
+          and is_position_stale
+        """
+    ).iloc[0]["n"]
     latest = apply_filters(latest_all)
 
     render_filter_bar()
@@ -1331,6 +1533,11 @@ def _render_body() -> None:
                 key=f"carte_{selection_scope(latest)}",
             )
             compte = f"{len(plotted):,} aéronefs du dernier relevé. ".replace(",", " ")
+            if ecartees:
+                compte += (
+                    f"{int(ecartees)} position(s) écartée(s), transmises il y a "
+                    "plus de cinq minutes. "
+                )
             biais = (
                 "**Les zones vides ne sont pas des zones sans trafic** : le "
                 "réseau OpenSky repose sur des récepteurs bénévoles, denses en "
@@ -1391,8 +1598,9 @@ def _render_body() -> None:
             )
             st.metric("Vitesse médiane", f"{latest['ground_speed_kt'].median():.0f} kt")
 
-    st.divider()
 
+def render_hourly_trend() -> None:
+    """Agrégat horaire : le creux nocturne et le pic du matin."""
     # -- Série horaire -----------------------------------------------------
     st.subheader("Tendance horaire")
 
@@ -1428,298 +1636,783 @@ def _render_body() -> None:
             "nocturne et le pic du matin deviennent visibles."
         )
 
-    with section("Pays et aéroports", collapsible=True, heading=False):
-        countries_column, airports_column = st.columns(2)
 
-        with countries_column:
-            st.subheader("Pays d'immatriculation")
-            countries = load(
+def render_rankings() -> None:
+    """Classements par pays d'immatriculation et par aéroport."""
+    countries_column, airports_column = st.columns(2)
+
+    with countries_column:
+        st.subheader("Pays d'immatriculation")
+        countries = load(
+            """
+            select origin_country, sum(position_count) as positions
+            from marts.fct_traffic_hourly
+            group by origin_country
+            order by positions desc
+            limit 12
+            """
+        )
+        selected_country = active_filters().get("origin_country")
+        chart = px.bar(
+            countries.sort_values("positions"),
+            x="positions",
+            y="origin_country",
+            orientation="h",
+            labels={"positions": "Positions", "origin_country": ""},
+        )
+        # La barre filtrée passe en vert : le filtre actif se repère d'un
+        # coup d'œil sur le graphe, sans lire le bandeau.
+        chart.update_traces(
+            marker={
+                "color": [
+                    "#34d399" if c == selected_country else "#22d3ee"
+                    for c in countries.sort_values("positions")["origin_country"]
+                ],
+                "opacity": 0.9,
+            }
+        )
+        style_fig(chart, height=420)
+        st.plotly_chart(chart, width="stretch", config=chart_config())
+
+    with airports_column:
+        st.subheader("Aéroports les plus actifs")
+        airports = load(
+            """
+            select
+                airport_label                   as aeroport,
+                airport_municipality            as ville,
+                sum(distinct_aircraft)          as aeronefs,
+                sum(descending_aircraft)        as en_approche,
+                sum(climbing_aircraft)          as en_montee,
+                round(avg(avg_distance_km), 2)  as distance_moy_km
+            from marts.fct_airport_activity
+            group by airport_label, airport_municipality
+            order by aeronefs desc
+            limit 15
+            """
+        )
+        # Les en-tetes viennent des alias SQL : on les renomme pour
+        # l'affichage plutôt que d'accentuer la requête, dont les noms de
+        # colonnes servent aussi de clés côté Python.
+        st.dataframe(
+            airports.rename(
+                columns={
+                    "aeroport": "Aéroport",
+                    "ville": "Ville",
+                    "aeronefs": "Aéronefs",
+                    "en_approche": "En approche",
+                    "en_montee": "En montée",
+                    "distance_moy_km": "Distance moy. (km)",
+                }
+            ),
+            width="stretch",
+            hide_index=True,
+            height=420,
+        )
+        st.caption(
+            "Les colonnes *en approche* et *en montée* sont inférées du taux "
+            "de montée : ADS-B ne publié pas de plan de vol."
+        )
+
+
+def render_fleet() -> None:
+    """Compagnies, constructeurs, âge des flottes et modèles."""
+    st.subheader("Compagnies et flotte")
+    airline_rows = load(
+        "select count(*) as n from marts.fct_airline_airport_activity "
+        "where airline_name is not null"
+    ).iloc[0]["n"]
+
+    if not airline_rows:
+        st.info(
+            "Pas encore de données compagnies. La troisième source (base "
+            "aéronefs OpenSky + compagnies OpenFlights) se remplit avec le pipeline.",
+        )
+    else:
+        fleet_left, fleet_right = st.columns(2)
+
+        with fleet_left:
+            top_airports = load(
                 """
-                select origin_country, sum(position_count) as positions
-                from marts.fct_traffic_hourly
-                group by origin_country
-                order by positions desc
+                select airport_iata_code, airport_label, sum(distinct_aircraft) as n
+                from marts.fct_airline_airport_activity
+                where airline_name is not null and airport_iata_code is not null
+                group by 1, 2
+                order by n desc
                 limit 12
                 """
             )
-            selected_country = active_filters().get("origin_country")
-            chart = px.bar(
-                countries.sort_values("positions"),
-                x="positions",
-                y="origin_country",
-                orientation="h",
-                labels={"positions": "Positions", "origin_country": ""},
+            labels = dict(
+                zip(
+                    top_airports["airport_iata_code"],
+                    top_airports["airport_label"],
+                    strict=False,
+                )
             )
-            # La barre filtrée passe en vert : le filtre actif se repère d'un
-            # coup d'œil sur le graphe, sans lire le bandeau.
-            chart.update_traces(
+            choice = st.selectbox(
+                "Part de marché des compagnies à l'aéroport",
+                options=list(labels.keys()),
+                format_func=lambda code: labels.get(code, code),
+            )
+            here = load(
+                "select airline_name, sum(distinct_aircraft) as aeronefs "
+                "from marts.fct_airline_airport_activity "
+                f"where airport_iata_code = '{choice}' and airline_name is not null "
+                "group by 1 order by 2 desc limit 10"
+            )
+            bar = px.bar(
+                here.sort_values("aeronefs"),
+                x="aeronefs",
+                y="airline_name",
+                orientation="h",
+                labels={"aeronefs": "Aéronefs distincts", "airline_name": ""},
+            )
+            selected_airline = active_filters().get("airline_name")
+            bar.update_traces(
                 marker={
                     "color": [
-                        "#34d399" if c == selected_country else "#22d3ee"
-                        for c in countries.sort_values("positions")["origin_country"]
+                        "#22d3ee" if a == selected_airline else "#34d399"
+                        for a in here.sort_values("aeronefs")["airline_name"]
                     ],
                     "opacity": 0.9,
                 }
             )
-            style_fig(chart, height=420)
-            st.plotly_chart(chart, width="stretch", config=chart_config())
+            style_fig(bar, height=360)
+            st.plotly_chart(bar, width="stretch", config=chart_config())
 
-        with airports_column:
-            st.subheader("Aéroports les plus actifs")
-            airports = load(
+        with fleet_right:
+            makers = load(
                 """
-                select
-                    airport_label                   as aeroport,
-                    airport_municipality            as ville,
-                    sum(distinct_aircraft)          as aeronefs,
-                    sum(descending_aircraft)        as en_approche,
-                    sum(climbing_aircraft)          as en_montee,
-                    round(avg(avg_distance_km), 2)  as distance_moy_km
-                from marts.fct_airport_activity
-                group by airport_label, airport_municipality
-                order by aeronefs desc
-                limit 15
+                select manufacturer_group, count(*) as aeronefs
+                from marts.dim_aircraft
+                where manufacturer_group <> 'Inconnu'
+                group by 1
+                order by 2 desc
                 """
             )
-            # Les en-tetes viennent des alias SQL : on les renomme pour
-            # l'affichage plutôt que d'accentuer la requête, dont les noms de
-            # colonnes servent aussi de clés côté Python.
-            st.dataframe(
-                airports.rename(
-                    columns={
-                        "aeroport": "Aéroport",
-                        "ville": "Ville",
-                        "aeronefs": "Aéronefs",
-                        "en_approche": "En approche",
-                        "en_montee": "En montée",
-                        "distance_moy_km": "Distance moy. (km)",
-                    }
+            donut = px.pie(
+                makers,
+                names="manufacturer_group",
+                values="aeronefs",
+                hole=0.58,
+                color_discrete_sequence=NEON,
+            )
+            selected_maker = active_filters().get("manufacturer_group")
+            donut.update_traces(
+                textinfo="label+percent",
+                textfont={"family": "Inter, sans-serif", "size": 11},
+                marker={"line": {"color": "#04070e", "width": 2}},
+                pull=[0.08 if m == selected_maker else 0 for m in makers["manufacturer_group"]],
+            )
+            style_fig(donut, height=360)
+            donut.update_layout(
+                showlegend=False,
+                title={"text": "Constructeurs (Airbus vs Boeing...)", "y": 0.97},
+                margin={"l": 8, "r": 8, "t": 46, "b": 6},
+            )
+            st.plotly_chart(donut, width="stretch", config=chart_config())
+            st.caption(
+                "Type et constructeur issus de la base aéronefs OpenSky. La "
+                "compagnie vient du code d'exploitant déclaré quand il "
+                "existe, du préfixe d'indicatif sinon, et seulement si ce "
+                "préfixe est attesté ailleurs comme code d'exploitant."
+            )
+
+        render_fleet_age()
+
+        # Top modèles d'avions (tous les types répertoriés dans la base).
+        models = load(
+            """
+            select
+                aircraft_type,
+                any_value(manufacturer) as manufacturer,
+                count(*)                as aeronefs
+            from marts.dim_aircraft
+            where aircraft_type is not null
+            group by aircraft_type
+            order by aeronefs desc
+            limit 15
+            """
+        )
+        if not models.empty:
+            # Étiquette lisible : "Boeing B738" plutôt que le code seul.
+            models["label"] = [
+                f"{m} {t}" if m else t
+                for m, t in zip(models["manufacturer"], models["aircraft_type"], strict=False)
+            ]
+            model_chart = px.bar(
+                models.sort_values("aeronefs"),
+                x="aeronefs",
+                y="label",
+                orientation="h",
+                labels={"aeronefs": "Aéronefs distincts", "label": ""},
+                text="aeronefs",
+            )
+            model_chart.update_traces(
+                marker={"color": "#b388ff", "opacity": 0.9},
+                textposition="outside",
+                textfont={"color": "#dbe7ff", "family": "Share Tech Mono, monospace"},
+                cliponaxis=False,
+            )
+            style_fig(model_chart, height=480)
+            model_chart.update_layout(
+                title={"text": "Modèles d'avions les plus vus", "y": 0.97},
+                margin={"l": 8, "r": 44, "t": 48, "b": 6},
+            )
+            st.plotly_chart(model_chart, width="stretch", config=chart_config())
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def air_quality_uncertainty() -> dict | None:
+    """Intervalle et p-valeur du resultat phare, par bootstrap sur grappes.
+
+    Deux mille reechantillonnages sur un panel de quelques centaines de
+    lignes : moins de trois secondes, mise en cache dix minutes.
+    """
+    panel = load(
+        """
+        select airport_iata_code, distinct_aircraft, no2_ugm3
+        from marts.fct_airport_hourly_air_quality
+        where no2_ugm3 is not null
+        """
+    )
+    if len(panel) < 30 or panel["airport_iata_code"].nunique() < 3:
+        return None
+    res = estimate(panel, "distinct_aircraft", "no2_ugm3", "airport_iata_code")
+    return {
+        "r": res.correlation,
+        "bas": res.low,
+        "haut": res.high,
+        "p": res.p_value,
+        "grappes": res.clusters,
+        "observations": res.observations,
+        "exclut_zero": res.excludes_zero,
+    }
+
+
+def render_uncertainty() -> None:
+    """Ce que vaut le resultat phare, au-dela du nombre.
+
+    Un coefficient publie nu ne dit pas s'il est distinguable du hasard.
+    Deux precautions sont imposees par la structure du panel : les heures
+    d'un meme aeroport ne sont pas independantes, et il n'y a qu'une
+    quinzaine d'aeroports. On reechantillonne donc les AEROPORTS, et on teste
+    en permutant le polluant a l'interieur de chacun.
+    """
+    mesure = air_quality_uncertainty()
+    if mesure is None:
+        return
+
+    st.markdown("**Ce que vaut ce chiffre**")
+
+    gauche, milieu, droite = st.columns(3)
+    gauche.metric(
+        "IC à 95 %",
+        f"[{mesure['bas']:+.2f} ; {mesure['haut']:+.2f}]",
+        help=(
+            "Bootstrap par grappes : on retire des AÉROPORTS avec remise, pas "
+            "des heures. Les heures d'un même aéroport se ressemblent trop "
+            "pour compter comme des témoignages indépendants."
+        ),
+    )
+    milieu.metric(
+        "p (permutation)",
+        f"{mesure['p']:.3f}" if mesure["p"] >= 0.001 else "< 0,001",
+        help=(
+            "Le NO2 est permuté À L'INTÉRIEUR de chaque aéroport, ce qui "
+            "conserve la structure et ne détruit que l'appariement heure par "
+            "heure. Proportion des tirages où le hasard fait au moins aussi "
+            "bien que la donnée réelle."
+        ),
+    )
+    droite.metric("Grappes", int(mesure["grappes"]))
+
+    verdict = (
+        "L'intervalle **exclut zéro** et la permutation ne reproduit "
+        "quasiment jamais un lien aussi marqué : l'inversion de signe n'est "
+        "pas un accident d'échantillonnage."
+        if mesure["exclut_zero"] and mesure["p"] < 0.05
+        else "L'intervalle **contient zéro** : à ce stade de la collecte, on "
+        "ne peut pas distinguer ce lien du hasard."
+    )
+    st.caption(
+        f"{verdict} Sur {int(mesure['observations'])} heures-aéroport réparties "
+        f"en {int(mesure['grappes'])} aéroports. **La limite à garder en tête** : "
+        f"{int(mesure['grappes'])} grappes, c'est peu, et un intervalle calculé "
+        "sur si peu de groupes est lui-même incertain. Il vaut mieux que le "
+        "chiffre nu qui figurait ici auparavant, il ne vaut pas une étude."
+    )
+
+
+def render_air_quality() -> None:
+    """Deuxième source : le trafic se lit-il dans le NO2 au sol ?"""
+    st.subheader("Trafic et qualité de l'air")
+    air_quality = load(
+        """
+        with panel as (
+            select
+                distinct_aircraft,
+                no2_ugm3,
+                distinct_aircraft
+                    - avg(distinct_aircraft) over (partition by airport_id) as ac_within,
+                no2_ugm3
+                    - avg(no2_ugm3) over (partition by airport_id) as no2_within
+            from marts.fct_airport_hourly_air_quality
+            where no2_ugm3 is not null
+        )
+        select
+            count(*)                          as n,
+            corr(distinct_aircraft, no2_ugm3) as r_naive,
+            corr(ac_within, no2_within)       as r_within
+        from panel
+        """
+    ).iloc[0]
+
+    if not air_quality["n"] or air_quality["n"] < 10:
+        st.info(
+            "Pas encore assez de données croisées trafic / qualité de l'air. "
+            "La deuxième source (Open-Météo) se remplit avec le pipeline.",
+        )
+    else:
+        left, right = st.columns([1, 2])
+        with left:
+            st.metric(
+                "r brut",
+                f"{air_quality['r_naive']:+.2f}",
+                help=(
+                    "Coefficient de corrélation de Pearson entre le nombre "
+                    "d'avions et le NO2, par heure. Sans unité, de -1 à +1 "
+                    "(0 = aucun lien). Le NO2 est mesuré en µg/m³."
                 ),
-                width="stretch",
-                hide_index=True,
-                height=420,
+            )
+            st.metric(
+                "r intra-aéroport",
+                f"{air_quality['r_within']:+.2f}",
+                help=(
+                    "Même coefficient, après retrait de la moyenne de chaque "
+                    "aéroport. La corrélation brute, positive, s'inverse : le "
+                    "lien n'est qu'un artefact 'entre aéroports'."
+                ),
             )
             st.caption(
-                "Les colonnes *en approche* et *en montée* sont inférées du taux "
-                "de montée : ADS-B ne publie pas de plan de vol."
+                "r = coefficient de corrélation de Pearson (sans unité, -1 à +1). "
+                "À l'échelle horaire, le trafic aérien n'est pas un prédicteur "
+                "détectable du NO2 au sol. Analyse complète : "
+                "`docs/analyse_trafic_qualite_air.md`."
             )
-
-    with section("Compagnies et flotte", collapsible=True):
-        airline_rows = load(
-            "select count(*) as n from marts.fct_airline_airport_activity "
-            "where airline_name is not null"
-        ).iloc[0]["n"]
-
-        if not airline_rows:
-            st.info(
-                "Pas encore de données compagnies. La troisième source (base "
-                "aéronefs OpenSky + compagnies OpenFlights) se remplit avec le pipeline.",
-            )
-        else:
-            fleet_left, fleet_right = st.columns(2)
-
-            with fleet_left:
-                top_airports = load(
-                    """
-                    select airport_iata_code, airport_label, sum(distinct_aircraft) as n
-                    from marts.fct_airline_airport_activity
-                    where airline_name is not null and airport_iata_code is not null
-                    group by 1, 2
-                    order by n desc
-                    limit 12
-                    """
-                )
-                labels = dict(
-                    zip(
-                        top_airports["airport_iata_code"],
-                        top_airports["airport_label"],
-                        strict=False,
-                    )
-                )
-                choice = st.selectbox(
-                    "Part de marché des compagnies à l'aéroport",
-                    options=list(labels.keys()),
-                    format_func=lambda code: labels.get(code, code),
-                )
-                here = load(
-                    "select airline_name, sum(distinct_aircraft) as aeronefs "
-                    "from marts.fct_airline_airport_activity "
-                    f"where airport_iata_code = '{choice}' and airline_name is not null "
-                    "group by 1 order by 2 desc limit 10"
-                )
-                bar = px.bar(
-                    here.sort_values("aeronefs"),
-                    x="aeronefs",
-                    y="airline_name",
-                    orientation="h",
-                    labels={"aeronefs": "Aéronefs distincts", "airline_name": ""},
-                )
-                selected_airline = active_filters().get("airline_name")
-                bar.update_traces(
-                    marker={
-                        "color": [
-                            "#22d3ee" if a == selected_airline else "#34d399"
-                            for a in here.sort_values("aeronefs")["airline_name"]
-                        ],
-                        "opacity": 0.9,
-                    }
-                )
-                style_fig(bar, height=360)
-                st.plotly_chart(bar, width="stretch", config=chart_config())
-
-            with fleet_right:
-                makers = load(
-                    """
-                    select manufacturer_group, count(*) as aeronefs
-                    from marts.dim_aircraft
-                    where manufacturer_group <> 'Inconnu'
-                    group by 1
-                    order by 2 desc
-                    """
-                )
-                donut = px.pie(
-                    makers,
-                    names="manufacturer_group",
-                    values="aeronefs",
-                    hole=0.58,
-                    color_discrete_sequence=NEON,
-                )
-                selected_maker = active_filters().get("manufacturer_group")
-                donut.update_traces(
-                    textinfo="label+percent",
-                    textfont={"family": "Inter, sans-serif", "size": 11},
-                    marker={"line": {"color": "#04070e", "width": 2}},
-                    pull=[0.08 if m == selected_maker else 0 for m in makers["manufacturer_group"]],
-                )
-                style_fig(donut, height=360)
-                donut.update_layout(
-                    showlegend=False,
-                    title={"text": "Constructeurs (Airbus vs Boeing...)", "y": 0.97},
-                    margin={"l": 8, "r": 8, "t": 46, "b": 6},
-                )
-                st.plotly_chart(donut, width="stretch", config=chart_config())
-                st.caption(
-                    "Type et constructeur issus de la base aéronefs OpenSky ; "
-                    "compagnie déduite du préfixe d'indicatif (OpenFlights)."
-                )
-
-            # Top modèles d'avions (tous les types répertoriés dans la base).
-            models = load(
+        with right:
+            panel = load(
                 """
-                select
-                    aircraft_type,
-                    any_value(manufacturer) as manufacturer,
-                    count(*)                as aeronefs
-                from marts.dim_aircraft
-                where aircraft_type is not null
-                group by aircraft_type
-                order by aeronefs desc
-                limit 15
-                """
-            )
-            if not models.empty:
-                # Étiquette lisible : "Boeing B738" plutôt que le code seul.
-                models["label"] = [
-                    f"{m} {t}" if m else t
-                    for m, t in zip(models["manufacturer"], models["aircraft_type"], strict=False)
-                ]
-                model_chart = px.bar(
-                    models.sort_values("aeronefs"),
-                    x="aeronefs",
-                    y="label",
-                    orientation="h",
-                    labels={"aeronefs": "Aéronefs distincts", "label": ""},
-                    text="aeronefs",
-                )
-                model_chart.update_traces(
-                    marker={"color": "#b388ff", "opacity": 0.9},
-                    textposition="outside",
-                    textfont={"color": "#dbe7ff", "family": "Share Tech Mono, monospace"},
-                    cliponaxis=False,
-                )
-                style_fig(model_chart, height=480)
-                model_chart.update_layout(
-                    title={"text": "Modèles d'avions les plus vus", "y": 0.97},
-                    margin={"l": 8, "r": 44, "t": 48, "b": 6},
-                )
-                st.plotly_chart(model_chart, width="stretch", config=chart_config())
-
-    with section("Trafic et qualité de l'air", collapsible=True):
-        air_quality = load(
-            """
-            with panel as (
-                select
-                    distinct_aircraft,
-                    no2_ugm3,
-                    distinct_aircraft
-                        - avg(distinct_aircraft) over (partition by airport_id) as ac_within,
-                    no2_ugm3
-                        - avg(no2_ugm3) over (partition by airport_id) as no2_within
+                select distinct_aircraft, no2_ugm3, airport_iata_code
                 from marts.fct_airport_hourly_air_quality
                 where no2_ugm3 is not null
+                """
             )
-            select
-                count(*)                          as n,
-                corr(distinct_aircraft, no2_ugm3) as r_naive,
-                corr(ac_within, no2_within)       as r_within
-            from panel
-            """
-        ).iloc[0]
+            scatter = px.scatter(
+                panel,
+                x="distinct_aircraft",
+                y="no2_ugm3",
+                color="airport_iata_code",
+                labels={
+                    "distinct_aircraft": "Avions distincts par heure",
+                    "no2_ugm3": "NO2 au sol (µg/m³)",
+                    "airport_iata_code": "Aéroport",
+                },
+            )
+            scatter.update_traces(marker={"size": 7, "opacity": 0.75})
+            style_fig(scatter, height=360)
+            st.plotly_chart(scatter, width="stretch", config=chart_config())
 
-        if not air_quality["n"] or air_quality["n"] < 10:
-            st.info(
-                "Pas encore assez de données croisées trafic / qualité de l'air. "
-                "La deuxième source (Open-Météo) se remplit avec le pipeline.",
-            )
-        else:
-            left, right = st.columns([1, 2])
-            with left:
-                st.metric(
-                    "Corrélation r (brute)",
-                    f"{air_quality['r_naive']:+.2f}",
-                    help=(
-                        "Coefficient de corrélation de Pearson entre le nombre "
-                        "d'avions et le NO2, par heure. Sans unité, de -1 à +1 "
-                        "(0 = aucun lien). Le NO2 est mesuré en µg/m³."
-                    ),
-                )
-                st.metric(
-                    "Corrélation r (intra-aéroport)",
-                    f"{air_quality['r_within']:+.2f}",
-                    help=(
-                        "Même coefficient, après retrait de la moyenne de chaque "
-                        "aéroport. La corrélation brute, positive, s'inverse : le "
-                        "lien n'est qu'un artefact 'entre aéroports'."
-                    ),
-                )
-                st.caption(
-                    "r = coefficient de corrélation de Pearson (sans unité, -1 à +1). "
-                    "À l'échelle horaire, le trafic aérien n'est pas un prédicteur "
-                    "détectable du NO2 au sol. Analyse complète : "
-                    "`docs/analyse_trafic_qualite_air.md`."
-                )
-            with right:
-                panel = load(
-                    """
-                    select distinct_aircraft, no2_ugm3, airport_iata_code
-                    from marts.fct_airport_hourly_air_quality
-                    where no2_ugm3 is not null
-                    """
-                )
-                scatter = px.scatter(
-                    panel,
-                    x="distinct_aircraft",
-                    y="no2_ugm3",
-                    color="airport_iata_code",
-                    labels={
-                        "distinct_aircraft": "Avions distincts par heure",
-                        "no2_ugm3": "NO2 au sol (µg/m³)",
-                        "airport_iata_code": "Aéroport",
-                    },
-                )
-                scatter.update_traces(marker={"size": 7, "opacity": 0.75})
-                style_fig(scatter, height=360)
-                st.plotly_chart(scatter, width="stretch", config=chart_config())
+        render_uncertainty()
+
+
+def render_diurnal_cycle() -> None:
+    """Cycle jour/nuit du trafic, en heure solaire locale.
+
+    La tendance horaire est en UTC, ce qui melange tous les fuseaux : le
+    matin japonais y tombe au même endroit que la nuit americaine, et le
+    cycle s'annule. En ramenant chaque position à l'heure SOLAIRE de sa
+    longitude - quinze degrés par heure - le rythme reapparait.
+
+    C'est une approximation : l'heure solaire ignore les fuseaux
+    administratifs et l'heure d'été. Pour lire un cycle jour/nuit, c'est
+    justement ce qu'il faut, puisque le soleil ne connaît pas les decrets.
+    """
+    st.subheader("Cycle jour / nuit")
+
+    cycle = load(
+        """
+        select
+            cast(floor(((extract(hour from snapshot_at) + longitude / 15.0) + 24) % 24) as int)
+                     as heure_locale,
+            count(*) as positions
+        from marts.fct_aircraft_positions
+        where not is_position_stale
+        group by 1
+        order by 1
+        """
+    )
+    if len(cycle) < 12:
+        st.caption("Pas encore assez d'heures couvertes pour dessiner le cycle.")
+        return
+
+    courbe = px.area(
+        cycle,
+        x="heure_locale",
+        y="positions",
+        labels={"heure_locale": "Heure solaire locale", "positions": "Positions"},
+    )
+    courbe.update_traces(
+        line={"color": "#22d3ee", "width": 2.4},
+        fillcolor="rgba(34,211,238,0.14)",
+    )
+    style_fig(courbe, height=300)
+    courbe.update_xaxes(dtick=3, ticksuffix=" h")
+    st.plotly_chart(courbe, width="stretch", config=chart_config())
+
+    pic = cycle.loc[cycle["positions"].idxmax()]
+    creux = cycle.loc[cycle["positions"].idxmin()]
+    st.caption(
+        f"Le trafic culmine vers **{int(pic['heure_locale'])} h** locale et "
+        f"tombe au plus bas vers **{int(creux['heure_locale'])} h**, dans un "
+        f"rapport de **{pic['positions'] / creux['positions']:.1f} pour 1**. "
+        "L'heure est déduite de la longitude (quinze degrés par heure), pas "
+        "du fuseau administratif. Comme la couverture ADS-B est très "
+        "majoritairement européenne et nord-américaine, ce cycle est d'abord "
+        "celui de ces deux régions."
+    )
+
+
+def render_collection_punctuality() -> None:
+    """Ponctualité réelle de la collecte, mesurée et non supposée.
+
+    Le cron est déclaré toutes les trente minutes. GitHub exécute les tâches
+    planifiées "au mieux", et l'écart entre deux relevés est une donnée que
+    le pipeline produit sur lui-même. L'afficher plutôt que la cadence
+    nominale, c'est la difference entre un tableau de bord qui decrit ce qui
+    devrait arriver et un qui decrit ce qui arrive.
+    """
+    st.subheader("Ponctualité de la collecte")
+
+    ecarts = load(
+        """
+        with releves as (
+            select distinct snapshot_at from marts.fct_aircraft_positions
+        )
+        select epoch(snapshot_at - lag(snapshot_at) over (order by snapshot_at)) / 60 as minutes
+        from releves
+        qualify minutes is not null
+        """
+    )
+    if len(ecarts) < 5:
+        st.caption("Trop peu de relevés pour mesurer la régularité.")
+        return
+
+    gauche, milieu, droite = st.columns(3)
+    gauche.metric("Écart médian", f"{ecarts['minutes'].median():.0f} min")
+    milieu.metric("9e décile", f"{ecarts['minutes'].quantile(0.90):.0f} min")
+    droite.metric("Dans les 45 min", f"{100 * (ecarts['minutes'] <= 45).mean():.0f} %")
+
+    # Des TRANCHES et non un histogramme. Les écarts vont de la minute à
+    # plusieurs dizaines d'heures : une échelle linéaire écrase tout le corps
+    # de la distribution contre l'axe, et un axe logarithmique ne sauve rien
+    # puisque Plotly bine en linéaire AVANT de tracer - les barres tombent
+    # alors à côté de leur place, jusqu'à disparaître.
+    bornes = [0, SCHEDULE_MINUTES + 5, 60, 120, 240, float("inf")]
+    etiquettes = [
+        f"moins de {SCHEDULE_MINUTES + 5} min",
+        f"{SCHEDULE_MINUTES + 5} min - 1 h",
+        "1 - 2 h",
+        "2 - 4 h",
+        "plus de 4 h",
+    ]
+    tranches = (
+        pd.cut(ecarts["minutes"], bins=bornes, labels=etiquettes, right=False)
+        .value_counts()
+        .reindex(etiquettes)
+        .reset_index()
+    )
+    tranches.columns = ["tranche", "intervalles"]
+
+    barres = px.bar(
+        tranches,
+        x="tranche",
+        y="intervalles",
+        labels={"tranche": "Écart entre deux relevés", "intervalles": "Intervalles"},
+        text="intervalles",
+    )
+    # La première tranche est la seule conforme à la cadence annoncee : elle
+    # se distingue, sinon le graphe ne dit pas ou est la cible.
+    barres.update_traces(
+        marker={
+            "color": ["#34d399"] + ["#3b82f6"] * (len(etiquettes) - 1),
+            "opacity": 0.9,
+        },
+        textposition="outside",
+        textfont={"color": "#9fb3d1", "size": 10},
+        cliponaxis=False,
+    )
+    style_fig(barres, height=280)
+    barres.update_layout(margin={"l": 8, "r": 8, "t": 18, "b": 6})
+    st.plotly_chart(barres, width="stretch", config=chart_config())
+    st.caption(
+        f"Cadence déclarée : {SCHEDULE_MINUTES} min. Écart médian réellement "
+        f"observé : **{ecarts['minutes'].median():.0f} min**, soit plus du "
+        "double. GitHub exécute les tâches planifiées au mieux, et dépriorise "
+        "les dépôts publics peu actifs. Ce n'est pas une panne, c'est le prix "
+        "d'un ordonnanceur gratuit : les seuils du bandeau de fraîcheur sont "
+        "calibrés sur cette distribution et non sur la cadence théorique."
+    )
+
+
+def render_coverage() -> None:
+    """Couverture geographique du réseau ADS-B, chiffree.
+
+    Le biais d'observation est repete en légende sous la carte, mais une
+    phrase ne se vérifie pas. Ces chiffres-la, si.
+    """
+    st.subheader("Couverture du réseau")
+
+    couverture = load(
+        """
+        select
+            case
+                when longitude between -30 and 45   and latitude between 35 and 72  then 'Europe'
+                when longitude between -170 and -50 and latitude between 15 and 72  then 'Amerique du Nord'
+                when longitude between 45 and 150   and latitude between 0 and 55   then 'Asie'
+                when longitude between -90 and -30  and latitude between -60 and 15 then 'Amerique du Sud'
+                when longitude between 110 and 180  and latitude between -50 and 0  then 'Oceanie'
+                when longitude between -20 and 55   and latitude between -40 and 35 then 'Afrique'
+                else 'Autre'
+            end      as region,
+            count(*) as positions
+        from marts.fct_aircraft_positions
+        where not is_position_stale
+        group by 1
+        order by positions desc
+        """
+    )
+    barres = px.bar(
+        couverture.sort_values("positions"),
+        x="positions",
+        y="region",
+        orientation="h",
+        labels={"positions": "Positions collectées", "region": ""},
+    )
+    barres.update_traces(marker={"color": "#22d3ee", "opacity": 0.9})
+    style_fig(barres, height=290)
+    st.plotly_chart(barres, width="stretch", config=chart_config())
+
+    total = couverture["positions"].sum()
+    deux_premieres = couverture.head(2)["positions"].sum()
+    st.caption(
+        f"**{100 * deux_premieres / total:.0f} % des positions viennent de deux "
+        "régions**, l'Europe et l'Amérique du Nord. OpenSky repose sur des "
+        "récepteurs installes par des bénévoles : la carte mesure autant la "
+        "densite des récepteurs que celle du trafic. **Conséquence directe** : "
+        "comparer des volumes entre régions n'a pas de sens ici, et les "
+        "analyses de ce projet restent valables à l'interieur d'une région, "
+        "pas entre elles."
+    )
+
+
+ARCHITECTURE = """
+Le tableau de bord ne lit que la couche **marts** d'un entrepôt DuckDB. Il
+n'ouvre jamais un fichier brut et ne recalcule jamais une agrégation : si une
+définition métier change, elle est corrigée dans un modèle dbt, testée et
+versionnée, pas dans une page.
+
+```
+OpenSky      ---.                bronze         silver             gold
+OurAirports  ---|  ingestion --> Parquet --> staging --> intermediate --> marts --> ici
+Open-Météo   ---|  (Python)      sur R2      (vues)        (vues)       (tables)
+OpenFlights  ---'
+```
+
+- **Ingestion** en Python, un instantané par exécution, écrit en Parquet sur
+  un stockage objet compatible S3. Le lac est immuable : on peut rejouer
+  n'importe quelle transformation sans rappeler les sources.
+- **Transformation** avec dbt. Les couches intermédiaires sont des vues, qui
+  ne coûtent rien en stockage ; seules les tables de faits et de dimensions
+  sont matérialisées, car le tableau de bord les lit en boucle.
+- **La table de faits est incrémentale**, en `delete+insert` sur la clé
+  (appareil, instant) : rejouer un relevé remplace ses lignes au lieu de les
+  dupliquer, donc chaque exécution est idempotente.
+- **Orchestration** par Dagster en local, par GitHub Actions en production.
+  Le graphe de lignée va du fichier Parquet jusqu'aux marts.
+"""
+
+CONTROLES = """
+- unicité et non-nullité des clés à chaque couche ;
+- plages de plausibilité physique (altitude, vitesse, coordonnées), en
+  avertissement et non en erreur : une valeur aberrante de capteur est un
+  fait, pas un bogue du pipeline ;
+- intégrité référentielle entre les faits et les dimensions ;
+- fraîcheur des sources, qui alerte si l'ingestion s'est arrêtée.
+
+Un test dur en échec fait passer le workflow au rouge et interrompt la
+publication : la donnée fausse ne remplace pas la donnée juste.
+"""
+
+LIMITES = """
+- **Ce n'est pas du temps réel.** Le pipeline est en lots : la série ne se
+  rafraîchit pas, elle s'accumule. Chaque point est une exécution.
+- **Ce ne sont pas des trajectoires.** Entre deux relevés, un appareil
+  parcourt des centaines de kilomètres dont rien n'est observé.
+- **Ce n'est pas un recensement.** La couverture ADS-B est très inégale, et
+  les volumes ne se comparent pas d'une région à l'autre.
+
+Chacune de ces limites est mesurée ailleurs dans cet onglet plutôt
+qu'affirmee.
+"""
+
+
+def render_method() -> None:
+    """Ce qu'il y a sous le tableau de bord.
+
+    Un tableau de bord montre des resultats ; il ne montre pas comment ils
+    sont produits. Pour un projet dont l'objet EST la chaîne de données,
+    c'est l'essentiel qui manque.
+    """
+    st.subheader("Comment c'est construit")
+    st.markdown(ARCHITECTURE)
+
+    gauche, droite = st.columns(2)
+    with gauche:
+        st.markdown("**Ce qui est vérifie à chaque exécution**")
+        st.markdown(CONTROLES)
+    with droite:
+        st.markdown("**Ce que ce tableau de bord ne prétend pas être**")
+        st.markdown(LIMITES)
+
+
+@st.fragment(run_every=interval_seconds if auto_refresh else None)
+def render() -> None:
+    """Corps du tableau de bord, réexécute à chaque rafraîchissement.
+
+    Isole dans un fragment : Streamlit ne rejoue que cette fonction, sans
+    réinitialiser les commandes de la barre latérale.
+
+    C'est aussi ICI que l'entrepôt est rafraîchi, et non dans le corps du
+    script. Un `run_every` ne rejoue QUE le fragment : place au niveau du
+    script, la reconstruction n'aurait lieu qu'au chargement initial de la
+    page, et le tableau de bord afficherait indéfiniment des données figées
+    pendant que le collecteur, lui, continue d'alimenter le lac.
+    """
+    import time as _time
+
+    try:
+        ensure_warehouse_built(int(_time.time() // REBUILD_INTERVAL_SECONDS))
+    except Exception as exc:  # noqa: BLE001 - une reconstruction ratée ne doit
+        # pas vider la page : on garde l'affichage précédent et on le signale.
+        st.warning(f"Rafraîchissement de l'entrepôt impossible : {exc}")
+
+    try:
+        _render_body()
+    except duckdb.IOException:
+        st.info("Mise à jour de l'entrepôt en cours, affichage dans un instant.")
+
+
+def _render_body() -> None:
+    # -- Fraîcheur ---------------------------------------------------------
+    overview = load(
+        """
+        select
+            count(*)                        as positions,
+            count(distinct aircraft_icao24) as aeronefs,
+            count(distinct snapshot_at)     as snapshots,
+            min(snapshot_at)                as debut,
+            max(snapshot_at)                as fin
+        from marts.fct_aircraft_positions
+        """
+    ).iloc[0]
+
+    airports_active = load(
+        "select count(distinct airport_id) as n from marts.fct_airport_activity"
+    ).iloc[0]["n"]
+
+    last_seen = overview["fin"]
+    age_minutes = (datetime.now(UTC) - last_seen.to_pydatetime()).total_seconds() / 60
+    span_hours = (overview["fin"] - overview["debut"]).total_seconds() / 3600
+
+    # Seuils calibrés sur le comportement RÉEL du cron GitHub Actions, pas sur
+    # sa cadence théorique : mesure faite sur ce dépôt, les écarts entre deux
+    # collectés vont de 50 min à plus de 3 h (GitHub exécute les crons "au
+    # mieux"). Des seuils calqués sur les 30 min nominales afficheraient une
+    # alerte en permanence, ce qui reviendrait à n'alerter sur rien.
+    if age_minutes <= NOMINAL_MAX_MINUTES:
+        status_chip(
+            "ok",
+            f"SIGNAL NOMINAL // dernier relevé il y a {age_minutes:.0f} min "
+            f"({last_seen:%H:%M:%S} UTC)",
+        )
+    elif age_minutes <= DEGRADED_MAX_MINUTES:
+        status_chip(
+            "warn",
+            f"COLLECTE RETARDÉE // dernier relevé il y a {age_minutes:.0f} min "
+            "(le cron GitHub est fréquemment différé)",
+        )
+    else:
+        status_chip(
+            "err",
+            f"SIGNAL PERDU // aucune donnée depuis {age_minutes / 60:.1f} h - "
+            "vérifier le workflow Collecte planifiée (onglet Actions)",
+        )
+
+    # -- Indicateurs clés --------------------------------------------------
+    # Le conteneur nomme produit une classe `st-key-indicateurs` : c'est le
+    # seul point d'accroche CSS fiable pour ne viser que ce bloc. Sur petit
+    # écran, ses cinq colonnes se rangent par deux au lieu de s'empiler, ce
+    # qui rend 300 pixels de défilement.
+    with st.container(key="indicateurs"):
+        columns = st.columns(5)
+        columns[0].metric("Positions", f"{int(overview['positions']):,}".replace(",", " "))
+        columns[1].metric("Aéronefs", f"{int(overview['aeronefs']):,}".replace(",", " "))
+        columns[2].metric("Snapshots", f"{int(overview['snapshots']):,}".replace(",", " "))
+        columns[3].metric("Aéroports", int(airports_active))
+        columns[4].metric("Historique", f"{span_hours:.1f} h")
+
+    # -- Onglets -----------------------------------------------------------
+    # La page atteignait six mille pixels de haut : tout y était, mais il
+    # fallait faire défiler huit écrans pour atteindre le résultat chiffré du
+    # projet. Les onglets ne retirent rien, ils rendent la profondeur
+    # atteignable - le plus lourd fait désormais 2 400 pixels.
+    #
+    # Le Python de TOUS les onglets s'exécute à chaque passage ; seul le
+    # panneau actif est installé dans le navigateur. Le coût de calcul est
+    # donc inchangé, et c'est voulu : les requêtes sont mises en cache, et
+    # découvrir un onglet vide le temps qu'il se remplisse serait pire que
+    # de tout préparer d'avance.
+    radar, trafic, flotte, analyse, coulisses = st.tabs(
+        ["Radar", "Trafic", "Flotte", "Analyse", "Coulisses"]
+    )
+
+    with radar:
+        render_radar()
+
+    with trafic:
+        render_snapshot_series()
+        st.divider()
+        render_hourly_trend()
+        st.divider()
+        render_diurnal_cycle()
+        st.divider()
+        render_rankings()
+
+    with flotte:
+        render_fleet()
+
+    with analyse:
+        render_air_quality()
+
+    with coulisses:
+        render_signal_section()
+        st.divider()
+        render_collection_punctuality()
+        st.divider()
+        render_coverage()
+        st.divider()
+        render_method()
 
     # -- Pied de page ------------------------------------------------------
     st.divider()

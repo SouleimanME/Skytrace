@@ -10,11 +10,47 @@
     Deux origines combinees :
       * l'observation repetee (pays d'enregistrement, indicatifs, plafond) ;
       * l'enrichissement par la base aeronefs OpenSky (type reel, constructeur,
-        modele, operateur) et par le referentiel compagnies OpenFlights
-        (nom de la compagnie deduite du prefixe d'indicatif).
+        modele, operateur) et par le referentiel compagnies OpenFlights.
 
     C'est ce qui permet les analyses "part de marche des compagnies" et
     "Airbus vs Boeing par pays".
+
+    RATTACHEMENT A UNE COMPAGNIE : deux cles, pas une.
+
+    La premiere version deduisait la compagnie du seul prefixe d'indicatif
+    (les trois premieres lettres, qui sont le code OACI de l'exploitant).
+    C'est la cle la plus couvrante, et la plus bruyante : les codes se
+    reutilisent, et OpenFlights - fige depuis des annees - contient des
+    entrees perimees. Le tableau de bord affichait ainsi "Tiphook PLC", un
+    loueur de conteneurs, parmi les compagnies de Francfort.
+
+    Trois corrections, verifiees sur la donnee reelle :
+
+      1. Le code d'exploitant declare dans la base aeronefs prime sur le
+         prefixe d'indicatif. Il est moins couvrant (un tiers des appareils
+         observes) mais il est declare, pas devine. Exemple : les appareils
+         etiquetes "O Air" declarent DLH, ce sont des Lufthansa.
+
+      2. Un prefixe d'indicatif n'est retenu que s'il est ATTESTE, c'est-a-dire
+         s'il apparait comme code d'exploitant d'au moins un appareil de la
+         base. Un code que personne ne declare n'est pas un code : c'est une
+         collision. Cette regle ecarte environ un rattachement sur cinq, tous
+         du meme genre - "12 North", "Regional Air Iceland", "All Spain".
+
+      3. Quand OpenFlights donne une compagnie qu'il declare lui-meme
+         disparue, et que la base aeronefs nomme un exploitant, c'est ce
+         dernier qui gagne : une entree perimee contredite par la donnee
+         courante ne fait pas le poids. C'est ce qui transforme
+         "Tiphook PLC" en "AeroLogic".
+
+    Le nom canonique reste celui d'OpenFlights partout ailleurs : les deux
+    sources s'accordent dans 90 % des cas, et les 10 % restants sont des
+    variantes d'ecriture ("Klm", "Scandinavian Airlines") qui fragmenteraient
+    les agregats si on les melangeait.
+
+    `airline_source` dit laquelle des deux cles a tranche, pour que le
+    tableau de bord puisse distinguer un rattachement declare d'un
+    rattachement deduit.
 */
 
 with positions as (
@@ -82,6 +118,45 @@ airlines as (
 
 ),
 
+-- Codes d'exploitant reellement declares dans la base aeronefs. Sert de
+-- liste blanche : un prefixe d'indicatif absent d'ici est une collision,
+-- pas une compagnie.
+attested_codes as (
+
+    select distinct operator_icao as airline_icao
+    from metadata
+    where operator_icao is not null
+
+),
+
+-- Resolution de la compagnie, cle par cle, avant de choisir.
+resolved as (
+
+    select
+        aggregated.aircraft_icao24,
+
+        -- cle 1 : declaree dans la base aeronefs
+        metadata.operator_icao                                      as declared_icao,
+
+        -- cle 2 : deduite du prefixe d'indicatif, retenue seulement si
+        -- attestee par ailleurs
+        case
+            when attested_codes.airline_icao is not null
+            then upper(left(callsign_usage.callsign, 3))
+        end                                                         as inferred_icao,
+
+        metadata.operator                                           as declared_operator
+
+    from aggregated
+    left join callsign_usage
+        on aggregated.aircraft_icao24 = callsign_usage.aircraft_icao24
+    left join metadata
+        on aggregated.aircraft_icao24 = metadata.aircraft_icao24
+    left join attested_codes
+        on upper(left(callsign_usage.callsign, 3)) = attested_codes.airline_icao
+
+),
+
 final as (
 
     select
@@ -112,10 +187,23 @@ final as (
             else 'Autre'
         end                                                         as manufacturer_group,
 
-        -- compagnie deduite du prefixe (3 lettres) de l'indicatif le plus
-        -- frequent : c'est le code OACI de la compagnie.
-        upper(left(callsign_usage.callsign, 3))                     as airline_icao,
-        airlines.airline_name,
+        -- Code OACI de l'exploitant : le declare l'emporte sur le deduit.
+        coalesce(resolved.declared_icao, resolved.inferred_icao)    as airline_icao,
+
+        -- D'ou vient le rattachement. Un tableau de bord honnete doit pouvoir
+        -- distinguer une compagnie declaree d'une compagnie devinee.
+        case
+            when resolved.declared_icao is not null then 'code exploitant'
+            when resolved.inferred_icao is not null then 'indicatif'
+        end                                                         as airline_source,
+
+        -- Nom canonique OpenFlights, sauf quand OpenFlights se declare
+        -- lui-meme perime et que la base aeronefs nomme un exploitant.
+        case
+            when airlines.airline_name is null      then resolved.declared_operator
+            when airlines.is_active                 then airlines.airline_name
+            else coalesce(resolved.declared_operator, airlines.airline_name)
+        end                                                         as airline_name,
         airlines.country                                            as airline_country
 
     from aggregated
@@ -123,8 +211,10 @@ final as (
         on aggregated.aircraft_icao24 = callsign_usage.aircraft_icao24
     left join metadata
         on aggregated.aircraft_icao24 = metadata.aircraft_icao24
+    left join resolved
+        on aggregated.aircraft_icao24 = resolved.aircraft_icao24
     left join airlines
-        on upper(left(callsign_usage.callsign, 3)) = airlines.airline_icao
+        on coalesce(resolved.declared_icao, resolved.inferred_icao) = airlines.airline_icao
 
 )
 

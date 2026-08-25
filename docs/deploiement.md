@@ -161,3 +161,36 @@ visitees, et la maintenir eveillee par une visite programmee va contre cet
 esprit meme si rien ne l'interdit explicitement. L'intervalle est donc large
 - quatre visites par jour, la ou une par minute n'apporterait rien. Une
 alternative sans ambiguite existe : un hebergeur qui ne met pas en veille.
+
+
+## La veille : savoir que la collecte s'est arretee
+
+GitHub previent par courriel quand un workflow ECHOUE. Il ne dit rien de
+trois pannes silencieuses, pourtant les plus probables ici :
+
+- la collecte reussit mais n'ecrit rien (source muette, quota epuise) ;
+- GitHub desactive les taches planifiees d'un depot public reste soixante
+  jours sans commit, et la collecte s'arrete sans un seul echec ;
+- les identifiants R2 expirent.
+
+Dans ces trois cas tout reste vert et la donnee cesse d'arriver. La seule
+question qui les couvre est : quand le LAC a-t-il ete ecrit pour la derniere
+fois ? On interroge donc le lac et non l'entrepot, qu'une reconstruction
+fraiche a partir d'un lac fige rendrait faussement rassurant.
+
+```bash
+skytrace watchdog --max-age-hours 6
+```
+
+La commande sort en erreur si le dernier releve depasse le seuil, ce qui fait
+passer le workflow `veille.yml` au rouge et declenche le courriel de GitHub.
+Pas de service de plus, pas de compte de plus.
+
+Le seuil de six heures est large a dessein : les ecarts mesures entre deux
+collectes vont de la minute a plus de trois heures. Un seuil serre alerterait
+en permanence, c'est-a-dire n'alerterait plus.
+
+**Limite assumee.** Si GitHub desactive les taches planifiees du depot, il
+desactive aussi celle-ci : la veille s'eteint avec ce qu'elle surveille. Elle
+couvre les pannes de la collecte, pas la disparition de l'ordonnanceur. Un
+commit de temps en temps garde les deux en vie.

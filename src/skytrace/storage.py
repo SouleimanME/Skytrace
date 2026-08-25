@@ -99,6 +99,45 @@ def object_age_seconds(key: str, settings: Settings | None = None) -> float | No
     return time.time() - local.stat().st_mtime
 
 
+def newest_snapshot_age_seconds(settings: Settings | None = None) -> float | None:
+    """Age du releve de trafic le plus recent du lac, ou None s'il n'y en a pas.
+
+    `object_age_seconds` interroge une cle precise ; ici on cherche la plus
+    recente d'un prefixe entier, ce qui est la question que pose la veille :
+    "quand la collecte a-t-elle ecrit pour la derniere fois ?".
+
+    On regarde le LAC et non l'entrepot : c'est le lac qui recoit la
+    collecte. Un entrepot frais reconstruit a partir d'un lac fige donnerait
+    l'illusion que tout va bien.
+    """
+    import time
+
+    settings = settings or get_settings()
+    if settings.uses_r2:
+        from pyarrow.fs import FileSelector, FileType
+
+        fs = _s3_filesystem(settings)
+        prefixe = f"{settings.r2_bucket}/raw/opensky_states"
+        try:
+            fichiers = [
+                info
+                for info in fs.get_file_info(FileSelector(prefixe, recursive=True))
+                if info.type == FileType.File and info.mtime is not None
+            ]
+        except OSError:
+            # Prefixe absent : aucune collecte n'a encore eu lieu. Ce n'est
+            # pas une erreur de connexion, c'est une absence de donnee.
+            return None
+        if not fichiers:
+            return None
+        return time.time() - max(info.mtime.timestamp() for info in fichiers)
+
+    fichiers = list(settings.states_dir.rglob("*.parquet"))
+    if not fichiers:
+        return None
+    return time.time() - max(chemin.stat().st_mtime for chemin in fichiers)
+
+
 def _date_from_key(path: str):
     """Extrait la date de partition (ingest_date=YYYY-MM-DD) d'un chemin."""
     import re

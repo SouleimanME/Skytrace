@@ -65,6 +65,27 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+#: Les mêmes jetons que la feuille de style, côté Python. Plotly rend sur le
+#: serveur et ne voit pas les variables CSS : sans cette table, les graphes
+#: gardent leur propre palette et dérivent du reste de la page, ce qui était
+#: le cas avant la mise en système. Toute modification ici doit se refléter
+#: dans le bloc `:root` de THEME_CSS, et réciproquement.
+TOKENS = {
+    "bg": "#05070c",
+    "surface": "#0b0f17",
+    "raised": "#10151f",
+    "text": "#e8edf5",
+    "muted": "#9aa7bd",
+    "dim": "#6d7a90",
+    "accent": "#22d3ee",
+    # Couleurs de statut : elles portent un sens, donc elles subsistent -
+    # nommees, et declarees ici seulement.
+    "ok": "#34d399",
+    "warn": "#fbbf24",
+    "err": "#fb7185",
+    "violet": "#a78bfa",
+}
+
 #: Palette, réutilisée par les graphes et le thème CSS. Teintes moins
 #: saturées que du néon pur : sur fond sombre, elles restent distinctes sans
 #: vibrer, et supportent d'être superposées en semi-transparence.
@@ -135,164 +156,339 @@ UNKNOWN = {"-", "Inconnu"}
 # Thème (cockpit / HUD)
 # ---------------------------------------------------------------------------
 THEME_CSS = """
-/* Typographie : deux familles seulement, choisies pour la lisibilite plutot
-   que pour l'effet. Inter pour le texte (standard des interfaces modernes),
-   JetBrains Mono pour les chiffres et identifiants - une vraie police de
-   developpeur, dont les chiffres sont concus pour s'aligner en colonne.
-   Orbitron ne sert QUE au logotype : partout ailleurs il fatigue l'oeil. */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Orbitron:wght@700;900&display=swap');
+/* Feuille de style du tableau de bord, ecrite comme un SYSTEME.
+
+   Ce fichier a d'abord grandi par accretion : chaque troncature corrigee
+   ajoutait une taille, chaque respiration ajoutait un espacement. L'audit
+   donnait 23 tailles de police, 7 rayons de bordure, 10 valeurs de padding
+   et 14 couleurs en dur. Des valeurs separees par des ecarts que l'oeil ne
+   percoit pas, mais qui empechent tout rythme.
+
+   Trois regles desormais.
+
+   1. TOUT passe par un jeton. Aucune valeur en dur dans les regles : si une
+      taille manque, on la choisit dans l'echelle, on n'en invente pas une.
+   2. L'accent est reserve au SENS. Le cyan marquait auparavant les bordures,
+      les lueurs, les boutons, les filets decoratifs - present partout, il ne
+      signalait plus rien. Il ne sert plus qu'a trois choses : l'element
+      actif, le focus, et la donnee. Le decor est gris.
+   3. La hierarchie se fait par la taille, la graisse et l'espace, jamais par
+      la lueur.
+*/
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Orbitron:wght@700&display=swap');
 
 :root{
-  --cyan:#22d3ee; --blue:#3b82f6; --green:#34d399; --amber:#fbbf24; --red:#fb7185;
-  /* Contraste relevé : l'ancien gris (#6b7ea6) tombait sous le seuil de
-     lisibilite WCAG sur fond sombre et donnait un rendu terne. */
-  --text:#e6edf7; --muted:#9fb3d1; --dim:#7d93b5;
-  --line:rgba(34,211,238,0.18);
-  --panel:rgba(13,20,35,0.92); --grid:rgba(70,130,200,0.07);
+  /* -- echelle typographique : sept valeurs, rapport ~1.2 -------------- */
+  --t-xs:   0.6875rem;   /* 11px - etiquettes, mentions              */
+  --t-sm:   0.8125rem;   /* 13px - legendes, texte secondaire        */
+  --t-base: 0.9375rem;   /* 15px - corps                             */
+  --t-md:   1.0625rem;   /* 17px - titres de section                 */
+  --t-lg:   1.375rem;    /* 22px - chiffres secondaires              */
+  --t-xl:   2rem;        /* 32px - valeurs d'indicateurs             */
+  --t-hero: 2.375rem;    /* 38px - logotype, et lui seul             */
+
+  /* -- espacement : une echelle de 4 ----------------------------------- */
+  --s-0: 2px;  --s-1: 4px;  --s-2: 8px;  --s-3: 12px;
+  --s-4: 16px; --s-5: 24px; --s-6: 32px;
+
+  /* -- rayons : deux valeurs, pas sept --------------------------------- */
+  --r: 10px;
+  --r-pill: 999px;
+
+  /* -- fonds : trois profondeurs --------------------------------------- */
+  --bg:      #05070c;
+  --surface: #0b0f17;
+  --raised:  #10151f;
+
+  /* -- traits et texte : neutres. Une bordure ne porte pas de sens, donc
+        elle ne porte pas de couleur. -------------------------------------- */
+  --line:       rgba(255,255,255,0.08);
+  --line-strong:rgba(255,255,255,0.14);
+  --text:  #e8edf5;
+  --muted: #9aa7bd;
+  --dim:   #6d7a90;
+
+  /* -- accent : un seul, et seulement pour l'actif, le focus, la donnee -- */
+  --accent:      #22d3ee;
+  --accent-soft: rgba(34,211,238,0.10);
+
+  /* -- couleurs de STATUT : elles disent quelque chose, elles restent --- */
+  --ok:   #34d399;
+  --warn: #fbbf24;
+  --err:  #fb7185;
 }
 
-.stApp{
-  background:
-    radial-gradient(1200px 700px at 82% -12%, rgba(43,107,255,0.12), transparent 60%),
-    radial-gradient(900px 650px at -5% 105%, rgba(0,229,255,0.09), transparent 55%),
-    linear-gradient(180deg,#04070e 0%, #060b16 100%);
-  background-attachment: fixed;
-}
+/* ------------------------------------------------------------------ */
+/* Fond                                                                */
+/* ------------------------------------------------------------------ */
+.stApp{ background:var(--bg); }
+
+/* Grille technique, tres discrete : elle donne une texture sans devenir
+   un motif. Neutre, donc elle ne consomme pas l'accent. */
 .stApp::before{
   content:""; position:fixed; inset:0; pointer-events:none; z-index:0;
   background-image:
-    linear-gradient(var(--grid) 1px, transparent 1px),
-    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
-  background-size: 42px 42px;
-  -webkit-mask-image: radial-gradient(ellipse at 50% 35%, black 35%, transparent 82%);
-          mask-image: radial-gradient(ellipse at 50% 35%, black 35%, transparent 82%);
+    linear-gradient(rgba(255,255,255,0.022) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.022) 1px, transparent 1px);
+  background-size:48px 48px;
+  -webkit-mask-image: radial-gradient(ellipse at 50% 0%, black 20%, transparent 75%);
+          mask-image: radial-gradient(ellipse at 50% 0%, black 20%, transparent 75%);
 }
-.block-container{position:relative; z-index:1; padding-top:1.4rem; max-width:1500px;}
+.block-container{
+  position:relative; z-index:1; max-width:1440px;
+  padding-top:var(--s-5); padding-bottom:var(--s-6);
+}
 
+/* ------------------------------------------------------------------ */
+/* Typographie                                                         */
+/* ------------------------------------------------------------------ */
 body, .stApp, p, span, label, li, div[data-testid="stMarkdownContainer"]{
   color:var(--text); font-family:'Inter','Segoe UI',sans-serif;
-  font-size:0.94rem; line-height:1.55;
+  font-size:var(--t-base); line-height:1.6;
 }
-/* Titres de section : Inter en graisse forte, sans ornement. La hierarchie
-   passe par la graisse, la casse et l'espacement des lettres - un filet
-   colore n'apportait rien et se comportait mal dans les conteneurs imbriques
-   de Streamlit. */
+
 h1,h2,h3{ font-family:'Inter','Segoe UI',sans-serif !important; }
 h2,h3{
-  color:#dff6fb; font-weight:600; letter-spacing:0.08em; text-transform:uppercase;
-  text-shadow:none; line-height:1.35; margin-bottom:.35rem;
+  color:var(--text); font-weight:600; letter-spacing:.06em;
+  text-transform:uppercase; line-height:1.3;
+  margin:0 0 var(--s-3);
 }
-h2{ font-size:1.02rem;} h3{ font-size:0.92rem;}
+h2{ font-size:var(--t-md); }
+h3{ font-size:var(--t-base); }
 
-/* -- bandeau titre HUD -- */
+/* ------------------------------------------------------------------ */
+/* En-tete                                                             */
+/* ------------------------------------------------------------------ */
 .hud{
-  border:1px solid var(--line); border-radius:14px; padding:18px 22px; margin-bottom:6px;
-  background: linear-gradient(120deg, rgba(0,229,255,0.06), rgba(43,107,255,0.04));
-  box-shadow: inset 0 0 40px rgba(0,229,255,0.05), 0 0 30px rgba(2,8,20,0.6);
-  display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px;
+  border:1px solid var(--line); border-radius:var(--r);
+  padding:var(--s-5); margin-bottom:var(--s-3);
+  background:var(--surface);
+  display:flex; align-items:center; justify-content:space-between;
+  flex-wrap:wrap; gap:var(--s-3);
 }
-/* Halo fixe plutot qu'anime : une animation de `text-shadow` force le
-   navigateur a repeindre le titre en continu, ce qui saccade le defilement
-   pour un gain visuel nul. */
-.hud-title{ font-family:'Orbitron',sans-serif; font-weight:900; font-size:2.1rem; letter-spacing:6px;
-  color:#eaf9ff; text-shadow:0 0 20px rgba(34,211,238,0.50), 0 0 3px rgba(255,255,255,0.5); margin:0;}
-.hud-sub{ font-family:'JetBrains Mono',monospace; color:var(--muted); font-size:.76rem;
-  letter-spacing:.12em; font-weight:400;}
-.hud-badge{ font-family:'JetBrains Mono',monospace; font-size:.68rem; letter-spacing:.1em;
-  border:1px solid var(--line); border-radius:20px; padding:6px 14px; color:var(--cyan);
-  box-shadow:inset 0 0 14px rgba(34,211,238,0.08); font-weight:500;}
+/* Le logotype garde Orbitron - c'est l'identite du projet - mais sans le
+   halo, qui faisait basculer l'ensemble du cote decoratif. */
+.hud-title{
+  font-family:'Orbitron',sans-serif; font-weight:700;
+  font-size:var(--t-hero); letter-spacing:.14em;
+  color:var(--text); margin:0;
+}
+.hud-sub{
+  font-family:'JetBrains Mono',monospace; color:var(--muted);
+  font-size:var(--t-xs); letter-spacing:.1em; margin-top:var(--s-1);
+}
+.hud-badge{
+  font-family:'JetBrains Mono',monospace; font-size:var(--t-xs);
+  letter-spacing:.08em; border:1px solid var(--line);
+  border-radius:var(--r-pill); padding:var(--s-2) var(--s-4);
+  color:var(--muted);
+}
 
-/* -- puce de statut -- */
-.hud-status{ font-family:'JetBrains Mono',monospace; font-size:.79rem; letter-spacing:.04em;
-  border-radius:10px; padding:11px 16px; margin:2px 0 6px; border:1px solid var(--line);
-  background:var(--panel); display:flex; align-items:center; gap:10px;}
-/* Le point clignote via `opacity`, propriete composee par le GPU : contrairement
-   a une animation d'ombre ou de couleur, elle ne declenche aucun repaint. */
-.hud-status .dot{ width:9px; height:9px; border-radius:50%; box-shadow:0 0 10px currentColor;
-  animation:blink 2.4s ease-in-out infinite; will-change:opacity;}
-@keyframes blink{ 0%,100%{opacity:1;} 50%{opacity:.45;} }
-.hud-status.ok{ color:var(--green);} .hud-status.ok .dot{ background:var(--green);}
-.hud-status.warn{ color:var(--amber);} .hud-status.warn .dot{ background:var(--amber);}
-.hud-status.err{ color:var(--red);} .hud-status.err .dot{ background:var(--red);}
+/* ------------------------------------------------------------------ */
+/* Bandeau de statut : ici la couleur DIT quelque chose                */
+/* ------------------------------------------------------------------ */
+.hud-status{
+  font-family:'JetBrains Mono',monospace; font-size:var(--t-sm);
+  border-radius:var(--r); padding:var(--s-3) var(--s-4);
+  margin:0 0 var(--s-4); border:1px solid var(--line);
+  background:var(--surface); display:flex; align-items:center; gap:var(--s-3);
+}
+/* Le point clignote via `opacity`, propriete composee par le GPU :
+   contrairement a une animation d'ombre, elle ne declenche aucun repaint. */
+.hud-status .dot{
+  width:8px; height:8px; border-radius:50%; flex:none;
+  animation:blink 2.4s ease-in-out infinite; will-change:opacity;
+}
+@keyframes blink{ 0%,100%{opacity:1;} 50%{opacity:.4;} }
+.hud-status.ok{   color:var(--ok);   } .hud-status.ok .dot{   background:var(--ok);   }
+.hud-status.warn{ color:var(--warn); } .hud-status.warn .dot{ background:var(--warn); }
+.hud-status.err{  color:var(--err);  } .hud-status.err .dot{  background:var(--err);  }
 
-/* -- metriques = panneaux HUD, chiffres mis en avant -- */
+/* ------------------------------------------------------------------ */
+/* Indicateurs                                                         */
+/* ------------------------------------------------------------------ */
 [data-testid="stMetric"]{
-  background: linear-gradient(160deg, rgba(0,229,255,0.07), var(--panel) 62%);
-  border:1px solid var(--line); border-radius:12px; padding:16px 18px 12px;
-  box-shadow: inset 0 0 26px rgba(0,229,255,0.06), 0 0 22px rgba(2,8,20,0.55);
-   position:relative; overflow:hidden;
-  transition: box-shadow .2s ease, transform .2s ease;
+  background:var(--surface); border:1px solid var(--line);
+  border-radius:var(--r); padding:var(--s-4);
+  transition:border-color .15s ease, background .15s ease;
 }
+/* Au survol, la bordure s'eclaircit. Pas de deplacement, pas de lueur :
+   un tableau de bord n'a pas a bouger sous le curseur. */
 [data-testid="stMetric"]:hover{
-  transform: translateY(-2px);
-  box-shadow: inset 0 0 32px rgba(0,229,255,0.11), 0 0 28px rgba(0,229,255,0.20);
+  border-color:var(--line-strong); background:var(--raised);
 }
-[data-testid="stMetric"]::after{ content:""; position:absolute; left:0; top:0; width:100%; height:3px;
-  background:linear-gradient(90deg,transparent,var(--cyan),transparent); opacity:.9;
-  box-shadow:0 0 10px var(--cyan);}
 /* Chiffres en JetBrains Mono : chasse fixe et tabular-nums, donc les valeurs
-   restent alignees d'une carte a l'autre et ne "sautent" pas au rafraichissement. */
-[data-testid="stMetricValue"]{ font-family:'JetBrains Mono',monospace !important; color:#f4fbff;
-  font-size:2.15rem; font-weight:500; line-height:1.12; letter-spacing:-0.01em;
-  font-variant-numeric: tabular-nums; text-shadow:0 0 22px rgba(34,211,238,0.35);}
-[data-testid="stMetricLabel"] p{ color:var(--muted) !important; text-transform:uppercase;
-  letter-spacing:.14em; font-size:.66rem; font-family:'Inter',sans-serif; font-weight:600;}
+   restent alignees d'une carte a l'autre et ne "sautent" pas au
+   rafraichissement. */
+[data-testid="stMetricValue"]{
+  font-family:'JetBrains Mono',monospace !important; color:var(--text);
+  font-size:var(--t-xl); font-weight:500; line-height:1.15;
+  letter-spacing:-0.02em; font-variant-numeric:tabular-nums;
+}
+[data-testid="stMetricLabel"] p{
+  color:var(--dim) !important; text-transform:uppercase;
+  letter-spacing:.1em; font-size:var(--t-xs);
+  font-family:'Inter',sans-serif; font-weight:600;
+}
 
-hr{ border:none; height:1px; background:linear-gradient(90deg,transparent,var(--line),transparent); margin:1.1rem 0;}
+/* ------------------------------------------------------------------ */
+/* Bandeau d'indicateurs                                               */
+/*                                                                     */
+/* Composition asymetrique : un indicateur vivant qui prend la place et */
+/* porte sa courbe, quatre cumuls compacts a cote. Cinq boites egales   */
+/* donnaient le meme poids visuel a ce qui bouge et a ce qui ne peut    */
+/* que monter.                                                         */
+/* ------------------------------------------------------------------ */
+.kpi-band{
+  display:grid; grid-template-columns:minmax(280px,1fr) 2fr;
+  gap:var(--s-3); margin-bottom:var(--s-3);
+}
+/* Quatre colonnes fixes et non `auto-fit` : la barre laterale ouverte
+   ampute assez la largeur pour que la quatrieme carte bascule a la ligne,
+   ce qui laissait un vide au lieu d'une rangee. Quatre cumuls tiennent
+   toujours, quitte a se resserrer. */
+.card-grid{
+  display:grid; grid-template-columns:repeat(4,1fr); gap:var(--s-3);
+}
+.card{
+  background:var(--surface); border:1px solid var(--line);
+  border-radius:var(--r); padding:var(--s-4);
+  display:flex; flex-direction:column; gap:var(--s-1);
+  transition:border-color .15s ease;
+}
+.card:hover{ border-color:var(--line-strong); }
+.card-hero{ justify-content:space-between; }
+.card-label{
+  color:var(--dim); text-transform:uppercase; letter-spacing:.1em;
+  font-size:var(--t-xs); font-weight:600;
+}
+.card-row{ display:flex; align-items:baseline; gap:var(--s-3); flex-wrap:wrap; }
+.card-value{
+  font-family:'JetBrains Mono',monospace; color:var(--text);
+  font-size:var(--t-xl); font-weight:500; line-height:1.1;
+  letter-spacing:-0.02em; font-variant-numeric:tabular-nums;
+}
+.card-value-sm{ font-size:var(--t-lg); }
+.card-note{ color:var(--dim); font-size:var(--t-xs); line-height:1.4; }
 
-[data-testid="stSidebar"]{ background:linear-gradient(180deg,#060b16,#04070e); border-right:1px solid var(--line);}
+/* La variation dit un SENS, pas un jugement : plus d'avions la nuit n'est
+   pas un progres. D'ou deux teintes neutres plutot que vert et rouge. */
+.delta{
+  font-family:'JetBrains Mono',monospace; font-size:var(--t-xs);
+  font-weight:500; padding:var(--s-0) var(--s-2);
+  border-radius:var(--r-pill); border:1px solid var(--line);
+}
+.delta.up{ color:var(--accent); }
+.delta.down{ color:var(--muted); }
+
+.spark{ width:100%; height:40px; display:block; margin-top:var(--s-2); }
+
+/* ------------------------------------------------------------------ */
+/* Elements Streamlit                                                  */
+/* ------------------------------------------------------------------ */
+hr{ border:none; height:1px; background:var(--line); margin:var(--s-5) 0; }
+
+[data-testid="stSidebar"]{
+  background:var(--surface); border-right:1px solid var(--line);
+}
 /* Streamlit anime le repli de la barre laterale sur 300 ms. Si un
    rafraichissement automatique tombe pendant cette transition, l'ancien et le
    nouveau contenu se superposent et le texte parait dedouble. Un fond opaque
    sur le conteneur interne masque la couche du dessous pendant l'animation. */
-[data-testid="stSidebar"] > div:first-child{ background:#060b16;}
-[data-testid="stSidebar"] *{ color:var(--text);}
+[data-testid="stSidebar"] > div:first-child{ background:var(--surface); }
+[data-testid="stSidebar"] *{ color:var(--text); }
+[data-testid="stSidebar"] h2{
+  font-size:var(--t-xs); letter-spacing:.14em; color:var(--dim);
+}
+[data-testid="stSidebar"] [data-testid="stCaptionContainer"] p{
+  font-size:var(--t-xs);
+}
 
-[data-testid="stDataFrame"]{ border:1px solid var(--line); border-radius:12px; overflow:hidden;
-  box-shadow:0 0 20px rgba(2,8,20,0.5);}
+[data-testid="stDataFrame"]{
+  border:1px solid var(--line); border-radius:var(--r); overflow:hidden;
+}
 
-.stButton>button{ background:transparent; border:1px solid var(--line); color:var(--cyan);
-  text-transform:uppercase; letter-spacing:.1em; font-family:'Inter',sans-serif;
-  font-weight:600; font-size:.74rem; border-radius:9px; transition:all .2s;}
-.stButton>button:hover{ box-shadow:0 0 18px rgba(34,211,238,0.35);
-  background:rgba(34,211,238,0.07); color:#eaf9ff; border-color:var(--cyan);}
+.stButton>button{
+  background:transparent; border:1px solid var(--line-strong); color:var(--text);
+  text-transform:uppercase; letter-spacing:.08em;
+  font-family:'Inter',sans-serif; font-weight:600; font-size:var(--t-xs);
+  border-radius:var(--r); padding:var(--s-2) var(--s-4);
+  transition:background .15s ease, border-color .15s ease;
+}
+.stButton>button:hover{
+  background:var(--accent-soft); border-color:var(--accent); color:var(--text);
+}
 
-[data-testid="stAlert"]{ background:var(--panel) !important; border:1px solid var(--line);
-  border-radius:12px;}
+[data-testid="stAlert"]{
+  background:var(--surface) !important; border:1px solid var(--line);
+  border-radius:var(--r);
+}
 /* Legendes : Inter et non monospace. Le monospace sur du texte courant est
    plus lent a lire ; on le reserve aux chiffres et aux identifiants. */
 [data-testid="stCaptionContainer"] p{
-  color:var(--dim); font-family:'Inter',sans-serif; font-size:.78rem; line-height:1.5;}
+  color:var(--dim); font-family:'Inter',sans-serif;
+  font-size:var(--t-sm); line-height:1.55;
+}
 [data-testid="stCaptionContainer"] code{
-  font-family:'JetBrains Mono',monospace; font-size:.74rem; color:var(--muted);
-  background:rgba(34,211,238,0.07); padding:1px 5px; border-radius:4px;}
-[data-testid="stElementToolbar"]{ display:none;}
+  font-family:'JetBrains Mono',monospace; font-size:var(--t-xs);
+  color:var(--muted); background:rgba(255,255,255,0.05);
+  padding:var(--s-0) var(--s-1); border-radius:var(--s-1);
+}
+[data-testid="stElementToolbar"]{ display:none; }
 
-/* Barre laterale : hierarchie plus nette, texte lisible. */
-[data-testid="stSidebar"] h2{ font-size:.82rem; letter-spacing:.16em; color:var(--cyan);}
-[data-testid="stSidebar"] [data-testid="stCaptionContainer"] p{ font-size:.75rem; color:var(--dim);}
-
-/* -- barre d'onglets -- */
-/* Les onglets par defaut de Streamlit sont un texte gris souligne : ils
-   passent pour du texte et non pour une navigation. Ici ils portent la
-   meme typographie que les titres de section, et l'onglet actif est
-   marque par la couleur ET par un filet, pas par la couleur seule. */
+/* ------------------------------------------------------------------ */
+/* Onglets                                                             */
+/* ------------------------------------------------------------------ */
 [data-testid="stTabs"] [role="tablist"]{
-  gap:4px; border-bottom:1px solid var(--line); margin-bottom:.5rem;
+  gap:var(--s-1); border-bottom:1px solid var(--line);
+  margin-bottom:var(--s-5);
 }
 [data-testid="stTabs"] [role="tab"]{
   font-family:'Inter','Segoe UI',sans-serif; font-weight:600;
-  letter-spacing:.1em; text-transform:uppercase; font-size:.78rem;
-  color:var(--dim); padding:8px 16px; border-radius:8px 8px 0 0;
+  letter-spacing:.08em; text-transform:uppercase; font-size:var(--t-xs);
+  color:var(--dim); padding:var(--s-3) var(--s-4);
+  border-radius:var(--r) var(--r) 0 0;
+  transition:color .15s ease, background .15s ease;
 }
-[data-testid="stTabs"] [role="tab"]:hover{ color:var(--text); background:rgba(34,211,238,0.05); }
+[data-testid="stTabs"] [role="tab"]:hover{
+  color:var(--text); background:rgba(255,255,255,0.03);
+}
+/* L'onglet actif : c'est un etat, donc il porte l'accent. */
 [data-testid="stTabs"] [role="tab"][aria-selected="true"]{
-  color:var(--cyan); background:rgba(34,211,238,0.08);
+  color:var(--accent); background:var(--accent-soft);
 }
 /* Le surlignage de l'onglet actif : Streamlit le dessine en rouge par
    defaut, ce qui jure et suggere une erreur. */
-[data-testid="stTabs"] [data-baseweb="tab-highlight"]{ background:var(--cyan); }
+[data-testid="stTabs"] [data-baseweb="tab-highlight"]{ background:var(--accent); }
 [data-testid="stTabs"] [data-baseweb="tab-border"]{ background:transparent; }
+
+/* ------------------------------------------------------------------ */
+/* Sections repliees                                                   */
+/* ------------------------------------------------------------------ */
+[data-testid="stExpander"] details{
+  border:1px solid var(--line); border-radius:var(--r);
+  background:var(--surface);
+}
+[data-testid="stExpander"] summary p{
+  font-family:'Inter','Segoe UI',sans-serif; font-weight:600;
+  letter-spacing:.06em; text-transform:uppercase;
+  font-size:var(--t-base); color:var(--text);
+}
+
+/* ------------------------------------------------------------------ */
+/* Signes de la plateforme                                             */
+/*                                                                     */
+/* Le bandeau colore en haut de page, le petit bonhomme qui court       */
+/* pendant les calculs et le badge en bas a droite annoncent le         */
+/* framework avant d'annoncer le projet. Le menu, lui, reste : il porte */
+/* les reglages d'accessibilite du visiteur.                           */
+/* ------------------------------------------------------------------ */
+[data-testid="stDecoration"]{ display:none; }
+[data-testid="stStatusWidget"]{ display:none; }
+[data-testid="stAppViewBlockContainer"] > div:empty{ display:none; }
+.viewerBadge_container__1QSob,
+[class*="viewerBadge"]{ display:none !important; }
 
 /* ------------------------------------------------------------------ */
 /* Petits ecrans                                                       */
@@ -301,67 +497,48 @@ hr{ border:none; height:1px; background:linear-gradient(90deg,transparent,var(--
 /* place manque. Empilees telles quelles, les cinq cartes d'indicateurs*/
 /* occupaient a elles seules 470 pixels - plus de la moitie d'un ecran */
 /* de telephone avant d'avoir montre la moindre donnee. On les range   */
-/* donc par deux, on resserre les marges et on reduit la typographie   */
-/* d'affichage, dimensionnee pour un ecran large.                      */
+/* donc par deux, on resserre les marges et on descend d'un cran dans  */
+/* l'echelle typographique. Aucune valeur nouvelle n'est inventee ici. */
 /* ------------------------------------------------------------------ */
 @media (max-width: 640px){
 
-  .block-container{ padding-top:.7rem; padding-left:.7rem; padding-right:.7rem; }
+  .block-container{
+    padding-top:var(--s-3);
+    padding-left:var(--s-3); padding-right:var(--s-3);
+  }
 
-  /* La grille de fond coute un repaint a chaque defilement pour un
-     effet invisible sur un ecran de cette taille. */
+  /* La grille de fond coute un repaint a chaque defilement pour un effet
+     invisible sur un ecran de cette taille. */
   .stApp::before{ display:none; }
 
-  .hud{ padding:12px 14px; border-radius:12px; }
-  .hud-title{ font-size:1.6rem; letter-spacing:3px; }
-  .hud-sub{ font-size:.66rem; letter-spacing:.08em; }
-  .hud-badge{ font-size:.6rem; padding:4px 9px; }
+  .hud{ padding:var(--s-4); }
+  .hud-title{ font-size:var(--t-lg); letter-spacing:.1em; }
 
-  h2{ font-size:.92rem; } h3{ font-size:.84rem; }
+  h2{ font-size:var(--t-base); }
+  h3{ font-size:var(--t-sm); }
 
-  /* Deux indicateurs par ligne : `flex-basis` a 47 % laisse la place a
-     l'espacement, et `min-width` doit etre abaisse sinon Streamlit
-     impose sa propre largeur minimale et la ligne retombe a un. */
-  .st-key-indicateurs [data-testid="stColumn"]{
-    flex: 1 1 47% !important;
-    min-width: 47% !important;
-    width: 47% !important;
-  }
-  .st-key-indicateurs [data-testid="stMetricValue"]{ font-size:1.25rem !important; }
-  .st-key-indicateurs [data-testid="stMetricLabel"] p{ font-size:.62rem !important; }
-  .st-key-indicateurs [data-testid="stMetric"]{ padding:10px 12px !important; }
+  /* La bande d'indicateurs passe en une colonne, et les cumuls par deux :
+     quatre cartes cote a cote sur 375 pixels seraient illisibles. */
+  .kpi-band{ grid-template-columns:1fr; }
+  .card-grid{ grid-template-columns:repeat(2,1fr); }
+  .card{ padding:var(--s-3); }
+  .card-value{ font-size:var(--t-lg); }
+  .card-value-sm{ font-size:var(--t-base); }
 
-  /* Les legendes sous les graphes sont des paragraphes d'explication :
-     lisibles au calme sur un grand ecran, envahissants ici. */
-  [data-testid="stCaptionContainer"] p{ font-size:.72rem; line-height:1.45; }
+  [data-testid="stMetricValue"]{ font-size:var(--t-lg) !important; }
 
-  [data-testid="stMetricValue"]{ font-size:1.4rem !important; }
-
-  /* Le tableau des aeroports a six colonnes : il defile lateralement
-     dans son propre cadre plutot que d'etirer la page. */
+  /* Le tableau des aeroports a six colonnes : il defile lateralement dans
+     son propre cadre plutot que d'etirer la page. */
   [data-testid="stDataFrame"]{ overflow-x:auto; }
 
   /* Cinq onglets ne tiennent pas sur 375 pixels : ils defilent
      horizontalement plutot que de se comprimer illisiblement. */
   [data-testid="stTabs"] [role="tablist"]{ overflow-x:auto; flex-wrap:nowrap; }
   [data-testid="stTabs"] [role="tab"]{
-    padding:7px 11px; font-size:.7rem; letter-spacing:.06em; white-space:nowrap;
+    padding:var(--s-2) var(--s-3); letter-spacing:.04em; white-space:nowrap;
   }
 
-  /* Les sections repliees sont des titres de section : elles doivent en
-     avoir l'allure, pas celle d'un widget Streamlit par defaut. */
-  [data-testid="stExpander"] summary p{
-    font-family:'Inter','Segoe UI',sans-serif; font-weight:600;
-    letter-spacing:.08em; text-transform:uppercase; font-size:.9rem;
-    color:#dff6fb;
-  }
-  [data-testid="stExpander"] details{
-    border:1px solid var(--line); border-radius:12px;
-    background:linear-gradient(120deg, rgba(0,229,255,0.05), rgba(43,107,255,0.03));
-  }
-  /* Un separateur AVANT chaque section repliee suffit a les detacher :
-     celui que Streamlit ajoute autour creait deux respirations. */
-  [data-testid="stExpander"] + hr, hr + [data-testid="stExpander"]{ margin-top:.4rem; }
+  [data-testid="stExpander"] summary p{ font-size:var(--t-sm); }
 }
 """
 
@@ -467,15 +644,109 @@ ICON_NAME = "avion"
 AIRCRAFT_ICON_ATLAS, AIRCRAFT_ICON_MAPPING = aircraft_icon()
 
 
-def chart_config() -> dict:
-    """Options du rendu Plotly, adaptees au toucher.
+def sparkline(valeurs: list[float], *, largeur: int = 240, hauteur: int = 40) -> str:
+    """Courbe miniature en SVG, a inserer dans une carte.
 
-    La barre d'outils n'apparait qu'au survol sur un écran de bureau, mais
-    reste affichee en permanence sur un écran tactile, ou elle recouvre la
-    légende. Aucun de ses boutons - zoom, lasso, capture - n'a de sens au
-    doigt : on la retire.
+    Pas de bibliotheque : une polyligne suffit, et un graphe Plotly de
+    quarante pixels de haut couterait un conteneur, une infobulle et une
+    barre d'outils pour dessiner une ligne.
+
+    Aucun axe, aucune graduation, aucune valeur. Une sparkline ne se lit pas,
+    elle se percoit : elle dit "ca monte", "ca oscille", "c'est plat". Y
+    ajouter des reperes en ferait un mauvais graphe plutot qu'une bonne
+    vignette.
     """
-    return {"displayModeBar": not is_handheld(), "responsive": True}
+    if len(valeurs) < 2:
+        return ""
+
+    bas, haut = min(valeurs), max(valeurs)
+    amplitude = haut - bas
+    marge = 3
+
+    def y(valeur: float) -> float:
+        if amplitude == 0:
+            return hauteur / 2
+        # SVG compte vers le bas : on inverse pour que le haut soit le maximum.
+        return marge + (hauteur - 2 * marge) * (1 - (valeur - bas) / amplitude)
+
+    pas = largeur / (len(valeurs) - 1)
+    points = [(i * pas, y(v)) for i, v in enumerate(valeurs)]
+    trace = " ".join(f"{x:.1f},{p:.1f}" for x, p in points)
+    # L'aire sous la courbe ferme le trace jusqu'a la ligne de base.
+    aire = f"{trace} {largeur:.1f},{hauteur} 0,{hauteur}"
+    fin_x, fin_y = points[-1]
+
+    return (
+        f'<svg class="spark" viewBox="0 0 {largeur} {hauteur}" '
+        f'preserveAspectRatio="none" aria-hidden="true">'
+        f'<polygon points="{aire}" fill="var(--accent-soft)"/>'
+        f'<polyline points="{trace}" fill="none" stroke="var(--accent)" '
+        f'stroke-width="1.5" vector-effect="non-scaling-stroke" '
+        f'stroke-linejoin="round" stroke-linecap="round"/>'
+        f'<circle cx="{fin_x:.1f}" cy="{fin_y:.1f}" r="2.5" fill="var(--accent)"/>'
+        f"</svg>"
+    )
+
+
+def hero_card(
+    titre: str,
+    valeur: str,
+    *,
+    courbe: list[float] | None = None,
+    delta: float | None = None,
+    note: str = "",
+) -> str:
+    """Carte principale : un chiffre, son evolution, sa courbe.
+
+    Les indicateurs cumules - positions collectees, nombre de releves - ne
+    peuvent que monter : leur montrer une variation n'apprend rien. Celui-ci
+    est le seul qui respire, puisqu'il compte les appareils en vol a l'instant
+    du dernier releve. C'est donc lui qui merite la place et la courbe.
+    """
+    fleche, classe = "", "flat"
+    if delta is not None and abs(delta) >= 0.1:
+        fleche = "▲" if delta > 0 else "▼"
+        # Ni bon ni mauvais : plus d'avions la nuit n'est pas un progres.
+        # La couleur dit le SENS de la variation, pas un jugement.
+        classe = "up" if delta > 0 else "down"
+
+    variation = (
+        f'<span class="delta {classe}">{fleche} {abs(delta):.1f} %</span>'
+        if delta is not None and abs(delta) >= 0.1
+        else ""
+    )
+    return (
+        '<div class="card card-hero">'
+        f'<div class="card-label">{titre}</div>'
+        f'<div class="card-row"><span class="card-value">{valeur}</span>{variation}</div>'
+        f"{sparkline(courbe or [])}"
+        f'<div class="card-note">{note}</div>'
+        "</div>"
+    )
+
+
+def stat_card(titre: str, valeur: str, note: str = "") -> str:
+    """Carte secondaire : un cumul, sans variation ni courbe."""
+    return (
+        '<div class="card">'
+        f'<div class="card-label">{titre}</div>'
+        f'<div class="card-value card-value-sm">{valeur}</div>'
+        f'<div class="card-note">{note}</div>'
+        "</div>"
+    )
+
+
+def chart_config() -> dict:
+    """Options du rendu Plotly.
+
+    La barre d'outils est retirée partout, et non plus seulement sur écran
+    tactile. Ses boutons - zoom, lasso, capture d'écran - n'ont d'utilité sur
+    aucun de ces graphes : ils servent à explorer une figure qu'on aurait
+    produite pour soi. Ici les graphes sont des conclusions, pas des bacs à
+    sable. Et flottant au-dessus du coin supérieur droit, elle recouvrait les
+    légendes tout en annonçant la bibliothèque avant d'annoncer la donnée.
+    """
+    return {"displayModeBar": False, "responsive": True}
 
 
 def style_fig(fig, height: int | None = None):
@@ -486,29 +757,29 @@ def style_fig(fig, height: int | None = None):
     chiffres tabulaires, et infobulle contrastée.
     """
     axis = {
-        "gridcolor": "rgba(90,140,200,0.10)",
-        "zerolinecolor": "rgba(90,140,200,0.18)",
-        "linecolor": "rgba(90,140,200,0.22)",
-        "tickfont": {"family": "JetBrains Mono, monospace", "size": 11, "color": "#9fb3d1"},
-        "title": {"font": {"family": "Inter, sans-serif", "size": 12, "color": "#7d93b5"}},
+        "gridcolor": "rgba(255,255,255,0.06)",
+        "zerolinecolor": "rgba(255,255,255,0.10)",
+        "linecolor": "rgba(255,255,255,0.10)",
+        "tickfont": {"family": "JetBrains Mono, monospace", "size": 11, "color": TOKENS["muted"]},
+        "title": {"font": {"family": "Inter, sans-serif", "size": 12, "color": TOKENS["dim"]}},
     }
     fig.update_layout(
         template="plotly_dark",
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         colorway=NEON,
-        font={"family": "Inter, sans-serif", "color": "#9fb3d1", "size": 12},
+        font={"family": "Inter, sans-serif", "color": TOKENS["muted"], "size": 12},
         margin={"l": 8, "r": 8, "t": 14, "b": 6},
         xaxis=axis,
         yaxis=axis,
         legend={
             "bgcolor": "rgba(0,0,0,0)",
-            "font": {"family": "Inter, sans-serif", "size": 11, "color": "#9fb3d1"},
+            "font": {"family": "Inter, sans-serif", "size": 11, "color": TOKENS["muted"]},
         },
         hoverlabel={
-            "bgcolor": "rgba(10,17,32,0.96)",
-            "bordercolor": "#22d3ee",
-            "font": {"family": "JetBrains Mono, monospace", "size": 12, "color": "#eaf9ff"},
+            "bgcolor": TOKENS["raised"],
+            "bordercolor": TOKENS["accent"],
+            "font": {"family": "JetBrains Mono, monospace", "size": 12, "color": TOKENS["text"]},
         },
     )
     # Le titre n'est stylé QUE s'il existe. Toucher au titre d'une figure qui
@@ -517,7 +788,7 @@ def style_fig(fig, height: int | None = None):
     # l'absence de texte est sérialisée en `undefined` puis rendue telle quelle.
     if fig.layout.title.text:
         fig.update_layout(
-            title_font={"family": "Inter, sans-serif", "size": 13, "color": "#dff6fb"}
+            title_font={"family": "Inter, sans-serif", "size": 13, "color": TOKENS["text"]}
         )
 
     if height:
@@ -957,7 +1228,7 @@ def render_history(icao24: str) -> None:
         markers=True,
         labels={"snapshot_at": "", "barometric_altitude_ft": "Altitude (ft)"},
     )
-    courbe.update_traces(line={"width": 2.2, "color": "#22d3ee"}, marker={"size": 5})
+    courbe.update_traces(line={"width": 2.2, "color": TOKENS["accent"]}, marker={"size": 5})
     style_fig(courbe, height=190)
     courbe.update_layout(margin={"l": 8, "r": 8, "t": 6, "b": 4}, showlegend=False)
     st.plotly_chart(courbe, width="stretch", config=chart_config())
@@ -1070,16 +1341,22 @@ def render_aircraft_card(selection, positions: pd.DataFrame) -> None:
         # valeur mal formée - ou malveillante - s'exécuterait dans la page.
         title = html.escape(value("callsign", "(sans indicatif)"))
         subtitle = html.escape(str(airline or operator or "Exploitant inconnu"))
+        # Le fragment HTML de la fiche puise dans les mêmes variables CSS que
+        # le reste : une valeur écrite en dur ici dériverait au premier
+        # ajustement de la palette.
         badge = (
-            "<span style='color:#fbbf24;border:1px solid #fbbf24;border-radius:12px;"
-            "padding:2px 9px;font-size:.7rem;margin-left:10px'>ÉTAT / MILITAIRE ?</span>"
+            "<span style='color:var(--warn);border:1px solid var(--warn);"
+            "border-radius:var(--r-pill);padding:var(--s-0) var(--s-2);"
+            "font-size:var(--t-xs);margin-left:var(--s-2)'>"
+            "ÉTAT / MILITAIRE ?</span>"
             if military
             else ""
         )
         st.markdown(
-            f"<div style='font-family:JetBrains Mono,monospace;font-size:1.5rem;"
-            f"color:#eaf9ff'>{title}{badge}</div>"
-            f"<div style='color:#9fb3d1;margin-bottom:.6rem'>{subtitle}</div>",
+            "<div style='font-family:JetBrains Mono,monospace;"
+            "font-size:var(--t-lg);color:var(--text)'>"
+            f"{title}{badge}</div>"
+            f"<div style='color:var(--muted);margin-bottom:var(--s-3)'>{subtitle}</div>",
             unsafe_allow_html=True,
         )
 
@@ -1116,9 +1393,9 @@ def render_aircraft_card(selection, positions: pd.DataFrame) -> None:
 
 #: Ce que chaque code de detresse signifie, et la couleur qui va avec.
 EMERGENCY_STYLE = {
-    "urgence generale": ("Urgence", "#fb7185"),
-    "panne radio": ("Panne radio", "#fbbf24"),
-    "detournement": ("Détournement", "#a78bfa"),
+    "urgence generale": ("Urgence", TOKENS["err"]),
+    "panne radio": ("Panne radio", TOKENS["warn"]),
+    "detournement": ("Détournement", TOKENS["violet"]),
 }
 
 
@@ -1222,7 +1499,7 @@ def render_signal_section() -> None:
         barres.update_traces(
             marker={
                 "color": [
-                    "#fb7185" if t == "> 5 min" else "#22d3ee"
+                    TOKENS["err"] if t == "> 5 min" else TOKENS["accent"]
                     for t in distribution.sort_values("tranche")["tranche"]
                 ]
             }
@@ -1288,13 +1565,13 @@ def render_fleet_age() -> None:
     graphe.update_traces(
         marker={
             "color": [
-                "#fbbf24" if a > mediane else "#34d399"
+                TOKENS["warn"] if a > mediane else TOKENS["ok"]
                 for a in extremes.sort_values("age_moyen")["age_moyen"]
             ]
         },
         texttemplate="%{text} appareils",
         textposition="outside",
-        textfont={"color": "#9fb3d1", "size": 10},
+        textfont={"color": TOKENS["muted"], "size": 10},
         cliponaxis=False,
     )
     style_fig(graphe, height=430)
@@ -1396,7 +1673,7 @@ def render_snapshot_series() -> None:
                 "value": "Aéronefs",
                 "variable": "",
             },
-            color_discrete_map={"tous appareils": "#00e5ff", "au sol": "#3b5a8a"},
+            color_discrete_map={"tous appareils": TOKENS["accent"], "au sol": TOKENS["dim"]},
         )
         series.update_traces(
             line={"width": 2.6},
@@ -1573,11 +1850,11 @@ def render_radar() -> None:
                         "<br/><span style='opacity:.7'>{flight_phase}</span>"
                     ),
                     "style": {
-                        "backgroundColor": "rgba(10,17,32,0.96)",
-                        "color": "#eaf9ff",
+                        "backgroundColor": TOKENS["raised"],
+                        "color": TOKENS["text"],
                         "fontFamily": "Inter, sans-serif",
                         "fontSize": "12px",
-                        "border": "1px solid #22d3ee",
+                        "border": f"1px solid {TOKENS['accent']}",
                         "borderRadius": "8px",
                     },
                 },
@@ -1637,25 +1914,49 @@ def render_radar() -> None:
             phases = phase_source.groupby("flight_phase").size().reset_index(name="aeronefs")
             phases["libelle"] = phases["flight_phase"].map(phase_label)
             selected_phase = active_filters().get("flight_phase")
-            donut = px.pie(
+            # BARRES HORIZONTALES PLUTOT QU'UN CAMEMBERT. Cinq parts dans une
+            # colonne étroite obligeaient Plotly à incliner les étiquettes,
+            # qui finissaient par se chevaucher et déborder du cercle - c'était
+            # l'élément le plus laid de la page. Des barres alignées se lisent
+            # mieux : l'œil compare des longueurs sur une base commune, pas des
+            # angles. Et le libellé tient à côté, horizontal, toujours lisible.
+            phases = phases.sort_values("aeronefs")
+            total = int(phases["aeronefs"].sum())
+            phases["part"] = phases["aeronefs"] / max(total, 1)
+            barres = px.bar(
                 phases,
-                names="libelle",
-                values="aeronefs",
-                hole=0.62,
+                x="aeronefs",
+                y="libelle",
+                orientation="h",
                 color="flight_phase",
                 color_discrete_map=PHASE_COLOURS,
+                labels={"aeronefs": "", "libelle": ""},
+                text=[
+                    f"{n:,}".replace(",", " ") + f"  ({p:.0%})"
+                    for n, p in zip(phases["aeronefs"], phases["part"], strict=True)
+                ],
             )
-            donut.update_traces(
-                textinfo="label+value",
-                textfont={"family": "Inter, sans-serif", "size": 11},
-                marker={"line": {"color": "#04070e", "width": 2}},
-                # La part filtrée est détachée : le filtre actif se voit sur le
-                # graphe lui-même, pas seulement dans le bandeau.
-                pull=[0.08 if p == selected_phase else 0 for p in phases["flight_phase"]],
+            barres.update_traces(
+                textposition="outside",
+                textfont={"family": "JetBrains Mono, monospace", "size": 10},
+                # La part filtrée garde son opacité pleine, les autres
+                # s'effacent : le filtre actif se voit sur le graphe lui-même.
+                marker={
+                    "opacity": [
+                        1.0 if (selected_phase is None or p == selected_phase) else 0.35
+                        for p in phases["flight_phase"]
+                    ]
+                },
+                cliponaxis=False,
             )
-            style_fig(donut, height=240)
-            donut.update_layout(showlegend=False, margin={"l": 0, "r": 0, "t": 6, "b": 0})
-            st.plotly_chart(donut, width="stretch", config=chart_config())
+            style_fig(barres, height=240)
+            barres.update_layout(
+                showlegend=False,
+                margin={"l": 0, "r": 64, "t": 4, "b": 0},
+                bargap=0.35,
+            )
+            barres.update_xaxes(visible=False)
+            st.plotly_chart(barres, width="stretch", config=chart_config())
 
             st.metric(
                 "Altitude médiane",
@@ -1691,7 +1992,7 @@ def render_hourly_trend() -> None:
             labels={"traffic_hour": "Heure (UTC)", "positions": "Positions collectées"},
         )
         trend.update_traces(
-            line={"color": "#00e5ff", "width": 2.2},
+            line={"color": TOKENS["accent"], "width": 2.2},
             fillcolor="rgba(0,229,255,0.14)",
         )
         style_fig(trend, height=300)
@@ -1730,7 +2031,7 @@ def render_rankings() -> None:
         chart.update_traces(
             marker={
                 "color": [
-                    "#34d399" if c == selected_country else "#22d3ee"
+                    TOKENS["ok"] if c == selected_country else TOKENS["accent"]
                     for c in countries.sort_values("positions")["origin_country"]
                 ],
                 "opacity": 0.9,
@@ -1836,7 +2137,7 @@ def render_fleet() -> None:
             bar.update_traces(
                 marker={
                     "color": [
-                        "#22d3ee" if a == selected_airline else "#34d399"
+                        TOKENS["accent"] if a == selected_airline else TOKENS["ok"]
                         for a in here.sort_values("aeronefs")["airline_name"]
                     ],
                     "opacity": 0.9,
@@ -1846,41 +2147,93 @@ def render_fleet() -> None:
             st.plotly_chart(bar, width="stretch", config=chart_config())
 
         with fleet_right:
+            # DEUX FACONS DE COMPTER, ET ELLES NE DISENT PAS LA MEME CHOSE.
+            #
+            # La premiere version comptait les CELLULES : tous les appareils
+            # observes, confondus. Elle donnait Airbus et Boeing a 19 % a eux
+            # deux, ce qui semble absurde pour un duopole - jusqu'a regarder
+            # ce qu'il y avait dans "Autre" : des Cessna, des Piper, des
+            # Beechcraft. De l'aviation generale, innombrable en cellules et
+            # surtout tres presente au-dessus des Etats-Unis.
+            #
+            # 36 726 appareils sans compagnie sont vus 2,8 fois chacun, contre
+            # 27 195 avec compagnie vus 9,2 fois : les petits appareils sont
+            # nombreux mais volent peu, les avions de ligne sont moins
+            # nombreux et volent en permanence.
+            #
+            # On compte donc les POSITIONS des appareils rattaches a une
+            # compagnie : c'est le trafic commercial, ce que l'on veut dire
+            # quand on parle de parts de marche. L'autre lecture n'est pas
+            # fausse, elle repond a une autre question - elle est donnee en
+            # legende.
             makers = load(
                 """
-                select manufacturer_group, count(*) as aeronefs
+                select
+                    a.manufacturer_group as constructeur,
+                    count(*)             as positions
+                from marts.fct_aircraft_positions p
+                join marts.dim_aircraft a using (aircraft_icao24)
+                where a.manufacturer_group <> 'Inconnu'
+                  and a.airline_name is not null
+                group by 1
+                order by positions desc
+                """
+            )
+            cellules = load(
+                """
+                select manufacturer_group as constructeur, count(*) as aeronefs
                 from marts.dim_aircraft
                 where manufacturer_group <> 'Inconnu'
                 group by 1
-                order by 2 desc
                 """
             )
-            donut = px.pie(
-                makers,
-                names="manufacturer_group",
-                values="aeronefs",
-                hole=0.58,
-                color_discrete_sequence=NEON,
-            )
+
+            total = int(makers["positions"].sum())
+            makers["part"] = makers["positions"] / max(total, 1)
             selected_maker = active_filters().get("manufacturer_group")
-            donut.update_traces(
-                textinfo="label+percent",
-                textfont={"family": "Inter, sans-serif", "size": 11},
-                marker={"line": {"color": "#04070e", "width": 2}},
-                pull=[0.08 if m == selected_maker else 0 for m in makers["manufacturer_group"]],
+
+            barres = px.bar(
+                makers.sort_values("positions"),
+                x="positions",
+                y="constructeur",
+                orientation="h",
+                color_discrete_sequence=[TOKENS["accent"]],
+                labels={"positions": "", "constructeur": ""},
+                text=[f"{p:.1%}" for p in makers.sort_values("positions")["part"]],
             )
-            style_fig(donut, height=360)
-            donut.update_layout(
+            barres.update_traces(
+                textposition="outside",
+                textfont={"family": "JetBrains Mono, monospace", "size": 10},
+                marker={
+                    "opacity": [
+                        1.0 if (selected_maker is None or m == selected_maker) else 0.35
+                        for m in makers.sort_values("positions")["constructeur"]
+                    ]
+                },
+                cliponaxis=False,
+            )
+            style_fig(barres, height=360)
+            barres.update_layout(
                 showlegend=False,
-                title={"text": "Constructeurs (Airbus vs Boeing...)", "y": 0.97},
-                margin={"l": 8, "r": 8, "t": 46, "b": 6},
+                title={"text": "Constructeurs, part du trafic commercial", "y": 0.97},
+                margin={"l": 8, "r": 52, "t": 46, "b": 6},
+                bargap=0.35,
             )
-            st.plotly_chart(donut, width="stretch", config=chart_config())
+            barres.update_xaxes(visible=False)
+            st.plotly_chart(barres, width="stretch", config=chart_config())
+
+            duopole = makers.loc[makers["constructeur"].isin(["Airbus", "Boeing"]), "part"].sum()
+            duopole_cellules = cellules.loc[
+                cellules["constructeur"].isin(["Airbus", "Boeing"]), "aeronefs"
+            ].sum() / max(int(cellules["aeronefs"].sum()), 1)
             st.caption(
-                "Type et constructeur issus de la base aéronefs OpenSky. La "
-                "compagnie vient du code d'exploitant déclaré quand il "
-                "existe, du préfixe d'indicatif sinon, et seulement si ce "
-                "préfixe est attesté ailleurs comme code d'exploitant."
+                f"Part des **positions observées**, pour les seuls appareils "
+                f"rattachés à une compagnie : Airbus et Boeing y pèsent "
+                f"**{duopole:.0%}**. Compté en cellules et toute aviation "
+                f"confondue, le duopole tombe à **{duopole_cellules:.0%}** - non "
+                "parce qu'il serait plus faible, mais parce que les Cessna et "
+                "les Piper sont innombrables et volent peu. Les deux chiffres "
+                "sont exacts ; ils répondent à deux questions différentes."
             )
 
         render_fleet_age()
@@ -1914,9 +2267,9 @@ def render_fleet() -> None:
                 text="aeronefs",
             )
             model_chart.update_traces(
-                marker={"color": "#b388ff", "opacity": 0.9},
+                marker={"color": TOKENS["violet"], "opacity": 0.9},
                 textposition="outside",
-                textfont={"color": "#dbe7ff", "family": "Share Tech Mono, monospace"},
+                textfont={"color": TOKENS["muted"], "family": "JetBrains Mono, monospace"},
                 cliponaxis=False,
             )
             style_fig(model_chart, height=480)
@@ -2128,7 +2481,7 @@ def render_diurnal_cycle() -> None:
         labels={"heure_locale": "Heure solaire locale", "positions": "Positions"},
     )
     courbe.update_traces(
-        line={"color": "#22d3ee", "width": 2.4},
+        line={"color": TOKENS["accent"], "width": 2.4},
         fillcolor="rgba(34,211,238,0.14)",
     )
     style_fig(courbe, height=300)
@@ -2210,11 +2563,11 @@ def render_collection_punctuality() -> None:
     # se distingue, sinon le graphe ne dit pas ou est la cible.
     barres.update_traces(
         marker={
-            "color": ["#34d399"] + ["#3b82f6"] * (len(etiquettes) - 1),
+            "color": [TOKENS["ok"]] + [TOKENS["accent"]] * (len(etiquettes) - 1),
             "opacity": 0.9,
         },
         textposition="outside",
-        textfont={"color": "#9fb3d1", "size": 10},
+        textfont={"color": TOKENS["muted"], "size": 10},
         cliponaxis=False,
     )
     style_fig(barres, height=280)
@@ -2264,7 +2617,7 @@ def render_coverage() -> None:
         orientation="h",
         labels={"positions": "Positions collectées", "region": ""},
     )
-    barres.update_traces(marker={"color": "#22d3ee", "opacity": 0.9})
+    barres.update_traces(marker={"color": TOKENS["accent"], "opacity": 0.9})
     style_fig(barres, height=290)
     st.plotly_chart(barres, width="stretch", config=chart_config())
 
@@ -2441,18 +2794,68 @@ def _render_body() -> None:
             "vérifier le workflow Collecte planifiée (onglet Actions)",
         )
 
-    # -- Indicateurs clés --------------------------------------------------
-    # Le conteneur nomme produit une classe `st-key-indicateurs` : c'est le
-    # seul point d'accroche CSS fiable pour ne viser que ce bloc. Sur petit
-    # écran, ses cinq colonnes se rangent par deux au lieu de s'empiler, ce
-    # qui rend 300 pixels de défilement.
-    with st.container(key="indicateurs"):
-        columns = st.columns(5)
-        columns[0].metric("Positions", f"{int(overview['positions']):,}".replace(",", " "))
-        columns[1].metric("Aéronefs", f"{int(overview['aeronefs']):,}".replace(",", " "))
-        columns[2].metric("Snapshots", f"{int(overview['snapshots']):,}".replace(",", " "))
-        columns[3].metric("Aéroports", int(airports_active))
-        columns[4].metric("Historique", f"{span_hours:.1f} h")
+    # -- Indicateurs -------------------------------------------------------
+    # Cinq boites identiques alignees ne hierarchisent rien : elles donnent le
+    # meme poids visuel a un chiffre qui respire et a quatre cumuls qui ne
+    # peuvent que monter. La composition est donc asymetrique - un indicateur
+    # vivant, large, avec son evolution et sa courbe ; quatre cumuls compacts
+    # a cote.
+    vol = load(
+        """
+        select snapshot_at, count(*) as aeronefs
+        from marts.fct_aircraft_positions
+        where not is_position_stale
+        group by 1
+        order by snapshot_at desc
+        limit 24
+        """
+    ).sort_values("snapshot_at")
+
+    en_vol = int(vol["aeronefs"].iloc[-1]) if len(vol) else 0
+    variation = None
+    if len(vol) >= 2:
+        precedent = int(vol["aeronefs"].iloc[-2])
+        if precedent:
+            variation = 100 * (en_vol - precedent) / precedent
+
+    cartes = (
+        hero_card(
+            "Aéronefs en vol",
+            f"{en_vol:,}".replace(",", " "),
+            courbe=vol["aeronefs"].tolist(),
+            delta=variation,
+            note=f"Dernier relevé, comparé au précédent · {len(vol)} relevés tracés",
+        )
+        + '<div class="card-grid">'
+        + "".join(
+            [
+                stat_card(
+                    "Positions collectées",
+                    f"{int(overview['positions']):,}".replace(",", " "),
+                    "depuis le début",
+                ),
+                stat_card(
+                    "Aéronefs distincts",
+                    f"{int(overview['aeronefs']):,}".replace(",", " "),
+                    "jamais vus deux fois comptés",
+                ),
+                stat_card(
+                    "Relevés", f"{int(overview['snapshots']):,}".replace(",", " "), "exécutions"
+                ),
+                stat_card(
+                    "Aéroports actifs", f"{int(airports_active):,}".replace(",", " "), "survolés"
+                ),
+            ]
+        )
+        + "</div>"
+    )
+
+    st.markdown(f'<div class="kpi-band">{cartes}</div>', unsafe_allow_html=True)
+    st.caption(
+        f"Profondeur d'historique : {span_hours:.0f} h. Les quatre cumuls ne "
+        "peuvent que croître ; seul le nombre d'aéronefs en vol varie d'un "
+        "relevé à l'autre, et c'est le seul qui porte une courbe."
+    )
 
     # -- Onglets -----------------------------------------------------------
     # La page atteignait six mille pixels de haut : tout y était, mais il

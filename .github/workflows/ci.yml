@@ -54,6 +54,10 @@ jobs:
     # complete et ses controles sur un jeu de donnees synthetique.
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Deux commits : l'etape de migration construit avec les modeles du
+          # precedent avant de lancer ceux d'aujourd'hui.
+          fetch-depth: 2
 
       - uses: actions/setup-python@v5
         with:
@@ -80,6 +84,56 @@ jobs:
 
       - name: Reconstruction complete
         run: skytrace dbt build --full-refresh
+
+      - name: Migration - le code neuf sur un entrepot ancien
+        # CE QUE CETTE ETAPE ATTRAPE, ET QUE LES DEUX PRECEDENTES LAISSENT
+        # PASSER. Les etapes ci-dessus rejouent `dbt build` deux fois avec le
+        # MEME code : c'est de l'idempotence, et c'est necessaire. Ce n'est
+        # pas ce qui casse en production.
+        #
+        # Ce qui casse, c'est un entrepot bati avec les ANCIENS modeles puis
+        # du dbt NEUF par-dessus - la sequence que vit tout deploiement. Une
+        # colonne ajoutee a un modele incremental n'est pas retro-remplie :
+        # `append_new_columns` l'ajoute a la table mais laisse l'historique a
+        # NULL. Un test `not_null` echoue alors sur tout le passe, le build
+        # s'arrete, et l'aval est ignore - dimensions comprises. C'est arrive.
+        #
+        # On rejoue donc la migration : on construit avec les modeles du
+        # commit precedent, puis on lance ceux d'aujourd'hui sur le meme
+        # entrepot. Aucun modele ignore n'est tolere.
+        run: |
+          set -euo pipefail
+
+          precedent=$(git rev-parse HEAD~1 2>/dev/null || true)
+          if [ -z "$precedent" ]; then
+            echo "::notice::Pas de commit precedent : migration non testable."
+            exit 0
+          fi
+
+          git worktree add --detach /tmp/precedent "$precedent"
+          if [ ! -f /tmp/precedent/dbt/skytrace/dbt_project.yml ]; then
+            echo "::notice::Projet dbt absent du commit precedent : etape ignoree."
+            exit 0
+          fi
+
+          export SKYTRACE_DUCKDB_PATH="${GITHUB_WORKSPACE}/data/warehouse/migration.duckdb"
+          rm -f "$SKYTRACE_DUCKDB_PATH"
+
+          echo "--- entrepot bati avec les modeles de $precedent"
+          skytrace dbt build --project-dir /tmp/precedent/dbt/skytrace \
+                             --profiles-dir /tmp/precedent/dbt/skytrace
+
+          echo "--- puis les modeles d'aujourd'hui, sur le meme entrepot"
+          skytrace dbt build 2>&1 | tee /tmp/migration.log
+
+          # `dbt build` sort en erreur si un test dur echoue, ce que `set -e`
+          # attrape deja. Mais un modele IGNORE ne fait pas echouer la
+          # commande : c'est precisement ce qui avait laisse les dimensions a
+          # l'ancien schema sans que rien ne devienne rouge.
+          if grep -qE 'SKIP=[1-9]' /tmp/migration.log; then
+            echo "::error::Des modeles ont ete ignores apres migration : l'entrepot resterait en retard sur le code."
+            exit 1
+          fi
 
       - name: Inventaire de l'entrepot
         run: skytrace info

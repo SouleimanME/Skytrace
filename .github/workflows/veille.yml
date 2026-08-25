@@ -1,0 +1,80 @@
+name: Veille de la collecte
+
+# CE QUE CE WORKFLOW AJOUTE. GitHub previent deja par courriel quand un
+# workflow ECHOUE. Il ne dit rien de trois pannes silencieuses, pourtant les
+# plus probables sur ce montage :
+#
+#   * la collecte reussit mais n'ecrit rien - source muette, quota OpenSky
+#     epuise, ecriture qui part dans le vide ;
+#   * GitHub desactive les taches planifiees d'un depot public reste soixante
+#     jours sans commit, et la collecte s'arrete sans un seul echec ;
+#   * les identifiants R2 expirent.
+#
+# Dans ces trois cas tout reste vert et la donnee cesse d'arriver. La seule
+# question qui les couvre est : quand le LAC a-t-il ete ecrit pour la
+# derniere fois ? On interroge donc le lac, et non l'entrepot - un entrepot
+# fraichement reconstruit a partir d'un lac fige donnerait l'illusion que
+# tout va bien.
+#
+# L'alerte emprunte le canal qu'on regarde deja : une tache rouge dans
+# l'onglet Actions et le courriel que GitHub envoie a la premiere execution
+# en echec. Pas de service de plus, pas de compte de plus, pas de jeton de
+# plus a faire tourner.
+#
+# LA LIMITE EST ASSUMEE. Si GitHub desactive les taches planifiees du depot,
+# il desactive aussi celle-ci : la veille s'eteint avec ce qu'elle surveille.
+# Elle couvre les pannes de la collecte, pas la disparition de
+# l'ordonnanceur. Un commit de temps en temps suffit a garder les deux en vie.
+
+on:
+  schedule:
+    # Toutes les six heures, decale des heures rondes ou la contention est
+    # maximale (meme raison que pour la collecte).
+    - cron: "41 2,8,14,20 * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: veille
+  cancel-in-progress: true
+
+jobs:
+  fraicheur:
+    name: Fraicheur du lac
+    runs-on: ubuntu-latest
+    env:
+      SKYTRACE_R2_ACCOUNT_ID: ${{ secrets.SKYTRACE_R2_ACCOUNT_ID }}
+      SKYTRACE_R2_BUCKET: ${{ secrets.SKYTRACE_R2_BUCKET }}
+      SKYTRACE_R2_ACCESS_KEY_ID: ${{ secrets.SKYTRACE_R2_ACCESS_KEY_ID }}
+      SKYTRACE_R2_SECRET_ACCESS_KEY: ${{ secrets.SKYTRACE_R2_SECRET_ACCESS_KEY }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Secrets R2 presents ?
+        id: garde
+        # Un depot forke n'a pas ces secrets : la veille ne doit pas y sonner
+        # une alarme faute de configuration.
+        run: |
+          if [ -z "${SKYTRACE_R2_BUCKET}" ]; then
+            echo "::notice::Secrets R2 absents : veille inactive."
+            echo "active=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "active=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-python@v5
+        if: steps.garde.outputs.active == 'true'
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Installation
+        if: steps.garde.outputs.active == 'true'
+        run: pip install -e .
+
+      - name: Age du dernier releve
+        if: steps.garde.outputs.active == 'true'
+        # Six heures : les ecarts mesures entre deux collectes vont de la
+        # minute a plus de trois heures, le cron GitHub n'etant pas ponctuel.
+        # Un seuil serre alerterait en permanence, donc n'alerterait plus.
+        run: skytrace watchdog --max-age-hours 6

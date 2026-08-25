@@ -303,8 +303,19 @@ Cela débloque des analyses lisibles :
 
 - **Part de marché des compagnies par aéroport** (`fct_airline_airport_activity`) :
   à Paris-CDG, Air France domine devant TNT, FedEx et Delta.
-- **Airbus vs Boeing** sur l'ensemble des appareils vus : répartition à peu
-  près équilibrée (~34 % / ~35 %), le reste en Embraer, Bombardier, ATR.
+- **Airbus vs Boeing**, et une leçon de comptage. Rapportée aux *positions
+  observées* des appareils rattachés à une compagnie, la part du duopole est
+  de **80 %** (Boeing ~44 %, Airbus ~36 %). Comptée en *cellules*, toute
+  aviation confondue, elle tombe à **30 %** - et même à 19 % si l'on garde au
+  dénominateur les appareils dont la base ne connaît pas le constructeur.
+
+  Les deux chiffres sont exacts et répondent à deux questions différentes.
+  L'écart vient de l'aviation générale : 36 726 appareils sans compagnie sont
+  vus 2,8 fois chacun, contre 27 195 avec compagnie vus 9,2 fois. Les Cessna
+  et les Piper sont innombrables mais volent peu et court ; les avions de
+  ligne sont moins nombreux et volent en permanence. Le tableau de bord
+  affiche la première lecture, celle du trafic, et donne la seconde en
+  légende.
 - **Âge des flottes par compagnie** : sur les compagnies d'au moins 25
   appareils datés, l'écart va d'environ 7 ans à 33 ans, soit un facteur 4,5.
   Le fret et le régional exploitent des appareils convertis en fin de vie, le
@@ -361,6 +372,28 @@ ce qu'il vaut lui-même.
 - **Comment c'est construit**, et ce que le tableau de bord ne prétend pas
   être : ni du temps réel, ni des trajectoires, ni un recensement. Chaque
   limite est mesurée dans l'onglet plutôt qu'affirmée.
+
+## Savoir que ça tourne encore
+
+Deux garde-fous, nés de deux incidents réels.
+
+**Une veille de fraîcheur** (`skytrace watchdog`, workflow `veille.yml`).
+GitHub prévient quand un workflow échoue, mais pas quand il réussit sans rien
+produire, ni quand il désactive lui-même les tâches planifiées d'un dépôt
+resté soixante jours sans commit. La seule question qui couvre ces cas est
+« quand le lac a-t-il été écrit pour la dernière fois ? ». Seuil à six
+heures : les écarts réels entre deux collectes dépassent régulièrement trois
+heures, et un seuil serré alerterait en permanence.
+
+**Un test de migration** dans la CI. Les étapes existantes rejouaient
+`dbt build` deux fois avec le *même* code : c'est de l'idempotence. Ce qui
+casse en production, c'est un entrepôt bâti avec les *anciens* modèles puis du
+dbt *neuf* par-dessus - une colonne ajoutée à un modèle incrémental n'est pas
+rétro-remplie, un test `not_null` échoue sur tout l'historique, et l'aval est
+ignoré sans que rien ne devienne rouge. La CI rejoue désormais cette
+séquence : elle construit avec les modèles du commit précédent, puis avec
+ceux d'aujourd'hui, et refuse le moindre modèle ignoré. Rejoué sur le commit
+fautif, le garde-fou détecte bien les 40 modèles ignorés.
 
 ## Qualité des données
 

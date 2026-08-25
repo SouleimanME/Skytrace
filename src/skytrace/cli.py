@@ -91,6 +91,53 @@ def cmd_storage_check(_: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_watchdog(args: argparse.Namespace) -> int:
+    """Echoue si la collecte s'est arretee. Destine a une tache planifiee.
+
+    POURQUOI CETTE COMMANDE EXISTE. GitHub previent deja par courriel quand un
+    workflow ECHOUE. Il ne dit rien de trois pannes silencieuses, pourtant les
+    plus probables :
+
+      * le workflow reussit mais n'ecrit rien (source muette, quota epuise) ;
+      * GitHub desactive les taches planifiees d'un depot public reste
+        soixante jours sans commit ;
+      * les identifiants du stockage expirent.
+
+    Dans ces trois cas tout reste vert et la donnee cesse d'arriver. La seule
+    question qui les couvre toutes est donc : "quand le lac a-t-il ete ecrit
+    pour la derniere fois ?".
+
+    Le seuil par defaut est large a dessein. Les ecarts mesures entre deux
+    collectes vont de la minute a plus de trois heures - le cron GitHub n'est
+    pas ponctuel - et un seuil serre alerterait en permanence, c'est-a-dire
+    n'alerterait plus.
+    """
+    from skytrace.storage import newest_snapshot_age_seconds
+
+    settings = get_settings()
+    try:
+        age = newest_snapshot_age_seconds(settings)
+    except Exception as exc:  # noqa: BLE001 - message clair pour l'operateur
+        logger.error("Lac inaccessible : %s", exc)
+        return 1
+
+    if age is None:
+        logger.error("Aucun releve dans le lac : la collecte n'a jamais abouti.")
+        return 1
+
+    heures = age / 3600
+    if heures > args.max_age_hours:
+        logger.error(
+            "Collecte a l'arret : dernier releve il y a %.1f h (seuil %.1f h).",
+            heures,
+            args.max_age_hours,
+        )
+        return 1
+
+    print(f"Collecte active : dernier releve il y a {heures:.1f} h.")
+    return 0
+
+
 def cmd_dbt(args: argparse.Namespace) -> int:
     """Passe-plat vers dbt, avec l'environnement correctement prepare.
 
@@ -346,6 +393,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Verifie l'acces au lac de donnees (local ou R2).",
     )
     storage.set_defaults(handler=cmd_storage_check)
+
+    watchdog = subparsers.add_parser(
+        "watchdog",
+        help="Echoue si la collecte s'est arretee (pour une tache planifiee).",
+    )
+    watchdog.add_argument(
+        "--max-age-hours",
+        type=float,
+        default=6.0,
+        help=(
+            "Age maximal tolere du dernier releve, en heures. Large a dessein : "
+            "le cron GitHub n'est pas ponctuel et les ecarts mesures depassent "
+            "regulierement trois heures (defaut : 6)."
+        ),
+    )
+    watchdog.set_defaults(handler=cmd_watchdog)
 
     dbt = subparsers.add_parser(
         "dbt",

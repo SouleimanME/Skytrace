@@ -28,9 +28,31 @@
     la prediction vaut sur les appareils peu vus.
 */
 
+{%- set artefact = env_var('SKYTRACE_LAKE_URI') ~ '/model_predictions/aircraft_class.parquet' -%}
+
 with predictions as (
 
+{% if artefact_present(artefact) %}
     select * from {{ source('raw', 'model_predictions') }}
+{% else %}
+    -- Le classifieur n'a pas encore tourne. La table se construit vide
+    -- plutot que d'echouer : un mart absent arreterait le build et
+    -- emporterait tout l'aval, alors qu'une prediction manquante n'est pas
+    -- une erreur - c'est un etat normal avant le premier scoring. Les types
+    -- sont poses explicitement pour que le contrat de colonnes tienne meme
+    -- a zero ligne, et que les tests aval s'executent au lieu d'etre ignores.
+    select
+        cast(null as varchar)   as aircraft_icao24,
+        cast(null as bigint)    as predicted_commercial,
+        cast(null as double)    as probability_commercial,
+        cast(null as varchar)   as model_trained_at,
+        cast(null as double)    as model_score,
+        cast(null as double)    as training_commercial_share,
+        cast(null as timestamp with time zone) as scored_at,
+        cast(null as bigint)    as observations,
+        cast(null as double)    as score_for_this_aircraft
+    where false
+{% endif %}
 
 ),
 

@@ -65,6 +65,33 @@ sources:
           - name: measured_at
             description: Heure de la mesure (UTC).
 
+      - name: model_predictions
+        description: >
+          Sorties du classifieur d'appareils (skytrace model score). Une ligne
+          par aeronef assez observe, avec sa classe predite, la probabilite
+          associee et la version du modele qui l'a produite.
+
+          POURQUOI C'EST UNE SOURCE ET NON UN MODELE dbt. Le score est produit
+          par du Python, pas par du SQL : dbt ne peut pas le calculer. Il
+          transite donc par le lac comme n'importe quelle donnee externe, ce
+          qui lui donne au passage la durabilite qui lui manquerait dans
+          l'entrepot - celui-ci est reconstruit a intervalle regulier sur le
+          deploiement public.
+        meta:
+          external_location: >-
+            read_parquet('{{ env_var("SKYTRACE_LAKE_URI") }}/model_predictions/aircraft_class.parquet')
+        columns:
+          - name: aircraft_icao24
+            description: Adresse OACI 24 bits - cle de jointure avec dim_aircraft.
+          - name: predicted_commercial
+            description: 1 si le comportement de vol est celui d'un transport commercial.
+          - name: probability_commercial
+            description: Probabilite associee, entre 0 et 1.
+          - name: model_trained_at
+            description: >
+              Date d'entrainement du modele ayant produit la ligne. Sans elle,
+              impossible d'imputer une derive au bon modele.
+
       - name: opensky_aircraft_db
         description: >
           Base aeronefs OpenSky (~500 000 appareils) : type, constructeur,

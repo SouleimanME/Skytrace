@@ -177,6 +177,71 @@ models:
           Nom canonique OpenFlights, sauf lorsque celui-ci est declare perime
           et contredit par l'exploitant nomme dans la base aeronefs.
 
+  - name: fct_aircraft_predictions
+    description: >
+      Sorties du classifieur d'appareils, a COTE de la donnee declaree et
+      jamais a sa place. Une valeur predite qui remplacerait une valeur
+      observee deviendrait indiscernable d'un fait au bout de quelques
+      semaines. La table porte donc les deux, ce qui permet aussi de
+      surveiller la derive du modele sans etiquette fraiche.
+    columns:
+      - name: aircraft_icao24
+        data_tests:
+          - not_null
+          - unique
+      - name: predicted_commercial
+        description: 1 si le comportement de vol est celui d'un transport commercial.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+      - name: probability_commercial
+        description: Probabilite associee.
+        data_tests:
+          - not_null
+          - accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+      - name: model_trained_at
+        description: Version du modele ayant produit la ligne.
+        data_tests:
+          - not_null
+      - name: agrees_with_declared
+        description: >
+          Le modele confirme-t-il la donnee declaree ? Nul quand la base ne
+          declare rien - c'est-a-dire dans le cas que le modele comble.
+      - name: training_commercial_share
+        description: >
+          Part commerciale du jeu d'entrainement, recopiee sur chaque ligne.
+          C'est la reference de derive : le tableau de bord n'a pas acces au
+          fichier du modele, son conteneur etant neuf a chaque reveil. La
+          colonne doit donc voyager avec les predictions.
+        data_tests:
+          - not_null
+      - name: model_score
+        description: Exactitude equilibree mesuree sur le jeu de test, a l'entrainement.
+      - name: observations
+        description: Nombre de releves ayant servi a decrire l'appareil.
+        data_tests:
+          - not_null
+      - name: score_for_this_aircraft
+        description: >
+          Exactitude equilibree mesuree sur les appareils vus autant de fois
+          que celui-ci. Le classifieur accepte un appareil apercu une seule
+          fois : lui appliquer le score global lui promettrait une fiabilite
+          qu'il n'a pas. Cette colonne existe pour que la nuance survive a la
+          lecture.
+        data_tests:
+          - not_null
+          - accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 1
+      - name: scored_at
+        description: Date du scoring, distincte de celle de l'entrainement.
+
   - name: dim_airport
     description: >
       Dimension conforme des aerodromes, partagee par tous les faits

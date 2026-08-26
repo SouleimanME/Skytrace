@@ -12,6 +12,10 @@ de la meme maniere depuis un terminal, depuis Dagster ou depuis la CI.
     skytrace dagster             # orchestrateur, avec etat persistant
     skytrace info                # etat de l'entrepot et des quotas
     skytrace dashboard           # lance le tableau de bord Streamlit
+    skytrace watchdog            # echoue si la collecte s'est arretee
+    skytrace model train         # entraine et enregistre le classifieur
+    skytrace model info          # decrit la version en service
+    skytrace model predict <adresses OACI>
 """
 
 from __future__ import annotations
@@ -135,6 +139,162 @@ def cmd_watchdog(args: argparse.Namespace) -> int:
         return 1
 
     print(f"Collecte active : dernier releve il y a {heures:.1f} h.")
+    return 0
+
+
+def cmd_model(args: argparse.Namespace) -> int:
+    """Entraine, inspecte ou interroge le classifieur d'appareils."""
+    from skytrace.ml import (
+        OBSERVATION_COHORTS,
+        build_dataset,
+        list_versions,
+        load_model,
+        model_dir,
+        predict_aircraft,
+        save_model,
+        train_and_evaluate,
+    )
+    from skytrace.warehouse.duck import connect
+
+    if args.action == "train":
+        with connect() as connection:
+            jeu = build_dataset(connection)
+        if len(jeu) < 200:
+            logger.error("Pas assez d'appareils etiquetes (%d) pour entrainer.", len(jeu))
+            return 1
+
+        modele, fiche = train_and_evaluate(jeu)
+        chemin = save_model(modele, fiche)
+
+        print(f"Modele entraine sur {fiche.n_train} appareils, teste sur {fiche.n_test}.")
+        print(f"  ligne de base ({fiche.baseline_feature}) : {fiche.baseline_score:.4f}")
+        print(f"  modele                                    : {fiche.model_score:.4f}")
+        print(f"  gain reel                                 : {fiche.gain:+.4f}")
+        if not fiche.is_worth_it():
+            # On enregistre quand meme - le refus doit etre visible et
+            # decide par un humain, pas silencieusement impose.
+            logger.warning(
+                "Gain inferieur au seuil : une regle d'une ligne ferait presque aussi bien."
+            )
+        print(f"\nEnregistre : {chemin}")
+        return 0
+
+    if args.action == "info":
+        try:
+            _, fiche = load_model()
+        except FileNotFoundError as exc:
+            logger.error("%s", exc)
+            return 1
+        print(f"Modele courant, entraine le {fiche.trained_at}")
+        print(f"  variables      : {', '.join(fiche.features)}")
+        print(f"  appareils      : {fiche.n_train} entrainement / {fiche.n_test} test")
+        print(f"  score          : {fiche.model_score:.4f}")
+        print(f"  ligne de base  : {fiche.baseline_score:.4f} ({fiche.baseline_feature})")
+        print(f"  gain           : {fiche.gain:+.4f}")
+        if fiche.scores_by_observations:
+            # Le score global est une moyenne sur des populations tres
+            # inegales. Le detailler evite de promettre a un appareil vu une
+            # fois ce qui n'a ete mesure que sur des appareils bien suivis.
+            print("  fiabilite par nombre de releves :")
+            for _, _, libelle in OBSERVATION_COHORTS:
+                mesure = fiche.scores_by_observations.get(libelle)
+                if mesure:
+                    print(
+                        f"    {libelle:<20} {mesure['score']:.4f}"
+                        f"  ({mesure['n_test']} appareils de test)"
+                    )
+        versions = list_versions()
+        print(f"\n{len(versions)} version(s) dans {model_dir()} :")
+        for v in versions[:5]:
+            print(f"  {v}")
+        return 0
+
+    if args.action == "score":
+        from skytrace.ml import score_all
+        from skytrace.storage import write_parquet
+
+        try:
+            modele, fiche = load_model()
+        except FileNotFoundError as exc:
+            logger.error("%s", exc)
+            return 1
+
+        with connect() as connection:
+            scores = score_all(connection, modele, fiche)
+
+        # Les scores vont dans le LAC, pas dans l'entrepot. Celui-ci est
+        # reconstruit a intervalle regulier sur le deploiement public : une
+        # table ecrite hors dbt disparaitrait au premier reveil. Dans le lac,
+        # elle devient une source que dbt relit comme les autres.
+        import pyarrow as pa
+
+        resultat = write_parquet(
+            "model_predictions/aircraft_class.parquet",
+            pa.Table.from_pandas(scores, preserve_index=False),
+            get_settings(),
+        )
+        commerciaux = int(scores["predicted_commercial"].sum())
+        print(f"{len(scores)} appareils scores -> {resultat.uri}")
+        print(f"  transport commercial : {commerciaux} ({commerciaux / len(scores):.0%})")
+        print(f"  aviation generale    : {len(scores) - commerciaux}")
+        return 0
+
+    # action == "predict"
+    try:
+        modele, fiche = load_model()
+    except FileNotFoundError as exc:
+        logger.error("%s", exc)
+        return 1
+
+    with connect() as connection:
+        resultats = predict_aircraft(connection, modele, args.icao24)
+
+    if resultats.empty:
+        logger.error(
+            "Aucun de ces appareils n'apparait dans la fenetre de collecte. "
+            "Verifier l'adresse OACI, ou lancer `skytrace pipeline`."
+        )
+        return 1
+
+    for _, ligne in resultats.iterrows():
+        declare = ligne["manufacturer_group"]
+        connu = declare not in (None, "Inconnu") and declare == declare  # ecarte NaN
+        print(f"\n{ligne['aircraft_icao24']}  {ligne['registration'] or ''}".rstrip())
+        if ligne["most_frequent_callsign"]:
+            print(f"  indicatif habituel  : {ligne['most_frequent_callsign']}")
+        print(f"  classe predite      : {ligne['classe_predite']}")
+        print(
+            f"  confiance           : {max(ligne['probabilite_commercial'], 1 - ligne['probabilite_commercial']):.0%}"
+        )
+        print(
+            f"  constructeur declare: {declare}"
+            if connu
+            else "  constructeur declare: inconnu (c'est le cas que le modele comble)"
+        )
+        vues = int(ligne["observations"])
+        print(
+            f"  observe             : {vues} releve{'s' if vues > 1 else ''}, "
+            f"{ligne['altitude_mediane_ft']:,.0f} ft median, "
+            f"{ligne['vitesse_max_kt']:,.0f} kt max".replace(",", " ")
+        )
+        # La fiabilite annoncee est celle de la cohorte de l'appareil. Servir
+        # le score global a un appareil vu une seule fois lui promettrait une
+        # exactitude mesuree sur d'autres que lui.
+        for plancher, plafond, libelle in OBSERVATION_COHORTS:
+            if vues < plancher or (plafond is not None and vues > plafond):
+                continue
+            mesure = fiche.scores_by_observations.get(libelle)
+            if mesure:
+                print(
+                    f"  fiabilite ici       : {mesure['score']:.3f} "
+                    f"(mesuree sur les appareils {libelle})"
+                )
+            break
+    print(
+        f"\nModele du {fiche.trained_at[:10]}, exactitude equilibree "
+        f"{fiche.model_score:.3f} toutes cohortes confondues. Un appareil peu vu "
+        "est classe malgre tout, mais sa fiabilite propre est rappelee ci-dessus."
+    )
     return 0
 
 
@@ -409,6 +569,27 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     watchdog.set_defaults(handler=cmd_watchdog)
+
+    modele = subparsers.add_parser(
+        "model",
+        help="Entraine, inspecte ou interroge le classifieur d'appareils.",
+    )
+    modele.add_argument(
+        "action",
+        choices=("train", "info", "score", "predict"),
+        help=(
+            "train : entraine et enregistre une version datee. "
+            "info : decrit la version courante. "
+            "score : classe tous les appareils et ecrit dans le lac. "
+            "predict : classe des appareils designes par leur adresse OACI."
+        ),
+    )
+    modele.add_argument(
+        "icao24",
+        nargs="*",
+        help="Adresses OACI 24 bits a classer (pour `predict`).",
+    )
+    modele.set_defaults(handler=cmd_model)
 
     dbt = subparsers.add_parser(
         "dbt",

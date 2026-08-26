@@ -794,7 +794,7 @@ def style_fig(fig, height: int | None = None):
     if height:
         # Les hauteurs sont calibrees pour un écran large. Sur telephone,
         # les conserver telles quelles ferait de la page un couloir : chaque
-        # graphe occuperait la moitie de l'écran, et il y en a huit.
+        # graphe occuperait la moitié de l'écran, et il y en a huit.
         fig.update_layout(height=int(height * 0.72) if is_handheld() else height)
     return fig
 
@@ -848,6 +848,11 @@ REBUILD_INTERVAL_SECONDS = 600
 REQUIRED_COLUMNS = {
     "marts.fct_aircraft_positions": ("emergency_kind", "is_position_stale"),
     "marts.dim_aircraft": ("airline_source",),
+    "marts.fct_aircraft_predictions": (
+        "predicted_commercial",
+        "training_commercial_share",
+        "score_for_this_aircraft",
+    ),
 }
 
 
@@ -862,7 +867,7 @@ def schema_drift() -> list[str]:
     s'arrete, et TOUT l'aval est ignore - y compris les dimensions, qui
     restent a l'ancien schema.
 
-    Le tableau de bord se retrouve alors devant un entrepot a moitie a jour et
+    Le tableau de bord se retrouve alors devant un entrepôt à moitié à jour et
     plante sur une colonne manquante. C'est arrive en production : le code
     etait deploye, l'entrepot ne l'etait pas.
 
@@ -1241,7 +1246,7 @@ def render_history(icao24: str) -> None:
 
 
 def _picked_aircraft(selection) -> dict | None:
-    """Extrait l'appareil clique d'un événement de sélection deck.gl."""
+    """Extrait l'appareil cliqué d'un événement de sélection deck.gl."""
     try:
         objects = selection.selection["objects"]
     except (AttributeError, KeyError, TypeError):
@@ -1519,14 +1524,14 @@ def render_signal_section() -> None:
 def render_fleet_age() -> None:
     """Age des flottes par compagnie.
 
-    Deuxième question chiffree du projet, après la corrélation trafic / NO2.
+    Deuxième question chiffrée du projet, après la corrélation trafic / NO2.
     Elle n'était pas exploitable tant que le rattachement aux compagnies
     reposait sur le seul préfixe d'indicatif : le classement sortait des
     compagnies disparues depuis 1989.
 
     Le biais de sélection est réel et affiche : l'année de construction n'est
-    connue que pour la moitie de la base aéronefs, et rien ne garantit que
-    les appareils dates soient representatifs des autres.
+    connue que pour la moitié de la base aéronefs, et rien ne garantit que
+    les appareils datés soient représentatifs des autres.
     """
     ages = load(
         """
@@ -2584,7 +2589,7 @@ def render_collection_punctuality() -> None:
 
 
 def render_coverage() -> None:
-    """Couverture geographique du réseau ADS-B, chiffree.
+    """Couverture géographique du réseau ADS-B, chiffrée.
 
     Le biais d'observation est repete en légende sous la carte, mais une
     phrase ne se vérifie pas. Ces chiffres-la, si.
@@ -2596,10 +2601,10 @@ def render_coverage() -> None:
         select
             case
                 when longitude between -30 and 45   and latitude between 35 and 72  then 'Europe'
-                when longitude between -170 and -50 and latitude between 15 and 72  then 'Amerique du Nord'
+                when longitude between -170 and -50 and latitude between 15 and 72  then 'Amérique du Nord'
                 when longitude between 45 and 150   and latitude between 0 and 55   then 'Asie'
-                when longitude between -90 and -30  and latitude between -60 and 15 then 'Amerique du Sud'
-                when longitude between 110 and 180  and latitude between -50 and 0  then 'Oceanie'
+                when longitude between -90 and -30  and latitude between -60 and 15 then 'Amérique du Sud'
+                when longitude between 110 and 180  and latitude between -50 and 0  then 'Océanie'
                 when longitude between -20 and 55   and latitude between -40 and 35 then 'Afrique'
                 else 'Autre'
             end      as region,
@@ -2626,10 +2631,10 @@ def render_coverage() -> None:
     st.caption(
         f"**{100 * deux_premieres / total:.0f} % des positions viennent de deux "
         "régions**, l'Europe et l'Amérique du Nord. OpenSky repose sur des "
-        "récepteurs installes par des bénévoles : la carte mesure autant la "
-        "densite des récepteurs que celle du trafic. **Conséquence directe** : "
+        "récepteurs installés par des bénévoles : la carte mesure autant la "
+        "densité des récepteurs que celle du trafic. **Conséquence directe** : "
         "comparer des volumes entre régions n'a pas de sens ici, et les "
-        "analyses de ce projet restent valables à l'interieur d'une région, "
+        "analyses de ce projet restent valables à l'intérieur d'une région, "
         "pas entre elles."
     )
 
@@ -2681,8 +2686,186 @@ LIMITES = """
   les volumes ne se comparent pas d'une région à l'autre.
 
 Chacune de ces limites est mesurée ailleurs dans cet onglet plutôt
-qu'affirmee.
+qu'affirmée.
 """
+
+
+def render_model_drift() -> None:
+    """Ce que vaut le modele AUJOURD'HUI, et non le jour de son entrainement.
+
+    Un score de test est une photographie. Il decrit le modele face aux
+    donnees qu'il a connues, et vieillit sans prevenir : le trafic change avec
+    les saisons, la base aeronefs se remplit, la couverture ADS-B evolue. Un
+    modele qu'on ne surveille pas se degrade en silence, et c'est ce silence
+    qui separe un modele en production d'un modele simplement publie.
+
+    Deux signaux, faute de pouvoir mesurer la performance en continu : cela
+    demanderait des etiquettes fraiches, qui n'arrivent pas.
+
+      * L'ACCORD avec la donnee declaree, la ou elle existe. Il ne remplace
+        pas un score de test, puisqu'il porte aussi sur des appareils vus a
+        l'entrainement. Mais s'il baisse, quelque chose a bouge.
+      * La PART PREDITE commerciale, comparee a celle de l'entrainement. Un
+        ecart marque signale que la population observee n'est plus la meme.
+
+    Un troisieme bloc dit ce que le modele vaut SELON L'APPAREIL. Le
+    classifieur exigeait trois releves et ecartait ainsi 43 % de la flotte ;
+    il accepte desormais un seul releve. Sa fiabilite cesse donc d'etre
+    uniforme, et publier le seul score global reviendrait a promettre 0.94 a
+    un appareil pour lequel le modele vaut 0.82. Le detail n'est pas une
+    reserve d'usage : c'est la contrepartie assumee de la couverture.
+
+    Tout vient de `marts.fct_aircraft_predictions`, jamais du fichier du
+    modele : le conteneur qui sert cette page est neuf a chaque reveil et ne
+    contient aucun artefact. C'est pourquoi le score de test, la part
+    commerciale d'entrainement et la fiabilite par cohorte voyagent avec les
+    predictions, recopies sur chaque ligne.
+    """
+    etat = load(
+        """
+        select
+            max(model_trained_at)          as version,
+            max(model_score)               as score_test,
+            max(training_commercial_share) as part_entrainement,
+            max(scored_at)                 as score_le,
+            count(*)                       as appareils,
+            avg(predicted_commercial)      as part_predite,
+            avg(case when agrees_with_declared then 1.0 else 0.0 end)
+                filter (where agrees_with_declared is not null)   as accord,
+            count(*) filter (where agrees_with_declared is null)  as sans_etiquette
+        from marts.fct_aircraft_predictions
+        """
+    ).iloc[0]
+
+    st.subheader("Dérive du modèle")
+
+    if not int(etat["appareils"]):
+        st.caption(
+            "Aucun appareil scoré. Lancer `skytrace model train`, puis `skytrace model score`."
+        )
+        return
+
+    ecart = float(etat["part_predite"]) - float(etat["part_entrainement"])
+
+    # `st.metric` tronque tout libelle un peu long des que sa colonne se
+    # resserre : "Part commerciale predite" devenait "PART COMMER...". Les
+    # cartes du projet laissent le libelle passer a la ligne, et ce sont
+    # celles du bandeau d'entete : meme composant, meme rendu partout.
+    st.markdown(
+        '<div class="card-grid">'
+        + "".join(
+            [
+                stat_card(
+                    "Accord avec la base",
+                    f"{100 * float(etat['accord']):.1f} %",
+                    "là où le constructeur est déclaré",
+                ),
+                stat_card(
+                    "Part commerciale prédite",
+                    f"{100 * float(etat['part_predite']):.1f} %",
+                    f"{100 * ecart:+.1f} pts vs entraînement",
+                ),
+                stat_card(
+                    "Trous comblés",
+                    f"{int(etat['sans_etiquette']):,}".replace(",", " "),
+                    "appareils sans constructeur déclaré",
+                ),
+            ]
+        )
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+
+    st.caption(
+        "L'accord n'est **pas** un score de test : il porte aussi sur des "
+        "appareils vus à l'entraînement, donc il est optimiste. Sa valeur est "
+        "dans son évolution. S'il baisse, ou si la part prédite s'écarte de "
+        "celle de l'entraînement, la population observée n'est plus celle sur "
+        "laquelle le modèle a appris."
+    )
+
+    # Ce que vaut le modele selon combien l'appareil a ete vu. Sans ce
+    # decoupage, la page annoncerait une exactitude moyenne a des populations
+    # qui ne la partagent pas.
+    cohortes = load(
+        """
+        select
+            case
+                when observations = 1 then 'Vu 1 fois'
+                when observations = 2 then 'Vu 2 fois'
+                else 'Vu 3 fois ou plus'
+            end                             as cohorte,
+            count(*)                        as appareils,
+            max(score_for_this_aircraft)    as fiabilite,
+            avg(predicted_commercial)       as part_commerciale
+        from marts.fct_aircraft_predictions
+        group by 1
+        order by min(observations)
+        """
+    )
+    if not cohortes.empty:
+        total = int(cohortes["appareils"].sum())
+        st.markdown(
+            '<div class="card-grid">'
+            + "".join(
+                stat_card(
+                    str(ligne["cohorte"]),
+                    f"{float(ligne['fiabilite']):.3f}",
+                    f"{int(ligne['appareils']):,}".replace(",", " ")
+                    + f" appareils · {100 * int(ligne['appareils']) / total:.0f} % de la flotte",
+                )
+                for _, ligne in cohortes.iterrows()
+            )
+            + "</div>",
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            "Exactitude équilibrée mesurée **sur chaque population séparément**, "
+            "au même entraînement. Le classifieur exigeait auparavant trois "
+            "relevés et refusait donc les deux premières colonnes, soit 43 % de "
+            "la flotte. Ce refus n'était pas de la prudence mais de "
+            "l'abstention : classer un appareil peu vu **en disant ce que cela "
+            "vaut** informe davantage que ne rien en dire."
+        )
+
+    desaccords = load(
+        """
+        select declared_group, count(*) as appareils
+        from marts.fct_aircraft_predictions
+        where agrees_with_declared = false
+          and (probability_commercial > 0.9 or probability_commercial < 0.1)
+        group by 1
+        order by appareils desc
+        limit 6
+        """
+    )
+    if not desaccords.empty:
+        barres = px.bar(
+            desaccords.sort_values("appareils"),
+            x="appareils",
+            y="declared_group",
+            orientation="h",
+            labels={"appareils": "Appareils", "declared_group": ""},
+        )
+        barres.update_traces(marker={"color": TOKENS["warn"], "opacity": 0.9})
+        style_fig(barres, height=240)
+        barres.update_layout(
+            title={"text": "Désaccords francs avec la base déclarée", "y": 0.97},
+            margin={"l": 8, "r": 8, "t": 46, "b": 6},
+        )
+        st.plotly_chart(barres, width="stretch", config=chart_config())
+
+    st.caption(
+        f"Modèle entraîné le **{str(etat['version'])[:10]}**, exactitude "
+        f"équilibrée sur son jeu de test : **{float(etat['score_test']):.3f}** "
+        "toutes cohortes confondues. "
+        f"Dernier scoring : {str(etat['score_le'])[:16]} UTC, sur une population "
+        f"commerciale à **{100 * float(etat['part_entrainement']):.1f} %** lors "
+        "de l'entraînement. **Les désaccords francs ne sont pas tous des erreurs "
+        "du modèle** : ils portent surtout sur des hélicoptères Airbus et des "
+        "jets d'affaires Embraer, que la base range chez les constructeurs "
+        "d'avions de ligne. Le modèle a raison de ne pas les y mettre."
+    )
 
 
 def render_method() -> None:
@@ -2697,7 +2880,7 @@ def render_method() -> None:
 
     gauche, droite = st.columns(2)
     with gauche:
-        st.markdown("**Ce qui est vérifie à chaque exécution**")
+        st.markdown("**Ce qui est vérifié à chaque exécution**")
         st.markdown(CONTROLES)
     with droite:
         st.markdown("**Ce que ce tableau de bord ne prétend pas être**")
@@ -2706,9 +2889,9 @@ def render_method() -> None:
 
 @st.fragment(run_every=interval_seconds if auto_refresh else None)
 def render() -> None:
-    """Corps du tableau de bord, réexécute à chaque rafraîchissement.
+    """Corps du tableau de bord, réexécuté à chaque rafraîchissement.
 
-    Isole dans un fragment : Streamlit ne rejoue que cette fonction, sans
+    Isolé dans un fragment : Streamlit ne rejoue que cette fonction, sans
     réinitialiser les commandes de la barre latérale.
 
     C'est aussi ICI que l'entrepôt est rafraîchi, et non dans le corps du
@@ -2896,6 +3079,8 @@ def _render_body() -> None:
         render_collection_punctuality()
         st.divider()
         render_coverage()
+        st.divider()
+        render_model_drift()
         st.divider()
         render_method()
 

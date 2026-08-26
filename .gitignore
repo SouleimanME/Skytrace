@@ -24,6 +24,10 @@ htmlcov/
 # precisement son role.
 data/raw/*
 data/warehouse/*
+# Artefacts de modeles : ils se reconstruisent par `skytrace model train`, et
+# un binaire de plusieurs mega-octets par reentrainement ferait enfler le
+# depot sans rien apporter. Seule la fiche compte, et elle est reproductible.
+data/models/*
 data/.credit_ledger.json
 !data/raw/.gitkeep
 !data/warehouse/.gitkeep

@@ -53,3 +53,5 @@ orchestration/tmp*/
 Thumbs.db
 .vscode/
 .idea/
+node_modules/
+.wrangler/

@@ -25,9 +25,15 @@ name: Maintien en eveil
 
 on:
   schedule:
-    # Toutes les six heures, decale des heures rondes ou la contention est
+    # Toutes les huit heures, decale des heures rondes ou la contention est
     # maximale (meme raison que pour la collecte).
-    - cron: "23 1,7,13,19 * * *"
+    #
+    # Streamlit endort une application inactive au bout d'une douzaine
+    # d'heures : trois passages par jour laissent une marge confortable, et
+    # un de moins qu'avant. Ce workflow pilote un navigateur vers un site
+    # tiers, c'est le plus voyant des trois - raison de plus pour ne pas le
+    # faire tourner plus souvent que necessaire.
+    - cron: "23 3,11,19 * * *"
   workflow_dispatch: {}
 
 concurrency:

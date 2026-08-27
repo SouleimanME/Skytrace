@@ -13,6 +13,7 @@ de la meme maniere depuis un terminal, depuis Dagster ou depuis la CI.
     skytrace info                # etat de l'entrepot et des quotas
     skytrace dashboard           # lance le tableau de bord Streamlit
     skytrace watchdog            # echoue si la collecte s'est arretee
+    skytrace publier-sante       # publie l'etat du pipeline en JSON sur le lac
     skytrace model train         # entraine et enregistre le classifieur
     skytrace model info          # decrit la version en service
     skytrace model predict <adresses OACI>
@@ -139,6 +140,28 @@ def cmd_watchdog(args: argparse.Namespace) -> int:
         return 1
 
     print(f"Collecte active : dernier releve il y a {heures:.1f} h.")
+    return 0
+
+
+def cmd_publier_sante(_: argparse.Namespace) -> int:
+    """Publie l'etat du pipeline en JSON, lisible sans identifiants.
+
+    A APPELER APRES CHAQUE COLLECTE, jamais seul dans une tache a part : le
+    document doit refleter la derniere ecriture reelle, et un publieur qui
+    tourne quand la collecte echoue publierait une fraicheur mensongere.
+    """
+    from skytrace.storage import build_health_document, publish_health
+
+    document = build_health_document()
+    try:
+        resultat = publish_health()
+    except Exception as exc:  # noqa: BLE001 - message clair pour l'operateur
+        logger.error("Publication de la sante impossible : %s", exc)
+        return 1
+
+    print(f"Etat : {document['etat']} -> {resultat.uri}")
+    if document["dernier_releve_il_y_a_heures"] is not None:
+        print(f"  dernier releve il y a {document['dernier_releve_il_y_a_heures']:.2f} h")
     return 0
 
 
@@ -561,14 +584,21 @@ def build_parser() -> argparse.ArgumentParser:
     watchdog.add_argument(
         "--max-age-hours",
         type=float,
-        default=6.0,
+        default=10.0,
         help=(
             "Age maximal tolere du dernier releve, en heures. Large a dessein : "
             "le cron GitHub n'est pas ponctuel et les ecarts mesures depassent "
-            "regulierement trois heures (defaut : 6)."
+            "regulierement trois heures, et la collecte est passee a une par "
+            "heure (defaut : 10)."
         ),
     )
     watchdog.set_defaults(handler=cmd_watchdog)
+
+    sante = subparsers.add_parser(
+        "publier-sante",
+        help="Publie l'etat du pipeline en JSON a la racine du lac.",
+    )
+    sante.set_defaults(handler=cmd_publier_sante)
 
     modele = subparsers.add_parser(
         "model",

@@ -1,0 +1,33 @@
+# Worker exposant le seul document de sante du lac.
+#
+# Le bucket reste PRIVE : le Worker y accede par une liaison interne, pas par
+# une adresse publique. Aucun identifiant R2 n'apparait ici, et il n'en faut
+# aucun - c'est tout l'interet de la liaison.
+#
+# Deploiement :
+#   npx wrangler deploy --config cloudflare/sante/wrangler.toml
+#
+# L'adresse obtenue est de la forme
+#   https://skytrace-sante.<votre-sous-domaine>.workers.dev
+
+name = "skytrace-sante"
+main = "index.js"
+compatibility_date = "2026-08-01"
+
+# Liaison vers le bucket. `binding` est le nom vu depuis le code (env.LAC) ;
+# `bucket_name` doit correspondre au bucket reel.
+[[r2_buckets]]
+binding = "LAC"
+bucket_name = "skytrace-lake"
+
+[vars]
+# Au-dela de ce delai sans nouvelle publication, le Worker repond 503.
+# Meme valeur que `HEALTH_STALE_AFTER_HOURS` cote Python et que le seuil de
+# `skytrace watchdog` : trois seuils pour la meme question finiraient par se
+# contredire.
+SEUIL_HEURES = "10"
+
+# Pas d'observabilite payante, pas de domaine personnalise : l'adresse
+# workers.dev suffit, et l'offre gratuite couvre 100 000 requetes par jour
+# la ou un moniteur toutes les 5 minutes en demande 288.
+workers_dev = true

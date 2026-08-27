@@ -103,14 +103,20 @@ PHASE_COLOURS = {
 }
 
 #: Cadence NOMINALE du collecteur déployé (cron GitHub Actions).
-SCHEDULE_MINUTES = 30
+#:
+#: Passée de 30 à 60 minutes. Demander deux fois plus ne collectait pas
+#: davantage : GitHub n'honorait qu'une quinzaine des 48 exécutions
+#: quotidiennes demandées, pour un écart médian de 80 minutes. Une heure est
+#: par ailleurs la résolution de l'analyse trafic / NO2.
+SCHEDULE_MINUTES = 60
 
 #: Seuils de fraîcheur, calibrés sur le comportement observé et non sur la
 #: cadence nominale : GitHub diffère fréquemment les crons (écarts mesurés
-#: ici entre 50 min et 3 h). Alerter dès 35 min reviendrait à alerter en
-#: permanence, donc à ne plus rien signaler du tout.
-NOMINAL_MAX_MINUTES = 75
-DEGRADED_MAX_MINUTES = 240
+#: ici entre 50 min et 3 h). Alerter dès la cadence nominale reviendrait à
+#: alerter en permanence, donc à ne plus rien signaler du tout. Les seuils
+#: suivent le doublement de la cadence.
+NOMINAL_MAX_MINUTES = 150
+DEGRADED_MAX_MINUTES = 420
 
 #: Les phases de vol restent en ASCII dans l'entrepôt : ce sont des clés de
 #: jointure entre le modèle dbt, les tests de données et l'interface. Un
@@ -123,6 +129,18 @@ PHASE_LABELS = {
     "sol": "sol",
     "inconnu": "inconnu",
 }
+
+
+def cadence_lisible(minutes: int) -> str:
+    """Formule une cadence comme on la dit, pas comme on la stocke.
+
+    "toutes les 60 min" se lit mal la ou "une fois par heure" se lit seul.
+    La constante reste en minutes parce que les seuils s'y comparent.
+    """
+    if minutes % 60:
+        return f"toutes les {minutes} min"
+    heures = minutes // 60
+    return "une fois par heure" if heures == 1 else f"toutes les {heures} heures"
 
 
 def phase_label(value: str) -> str:
@@ -809,7 +827,7 @@ def load(sql: str) -> pd.DataFrame:
     Lecture seule volontairement : DuckDB n'autorise qu'un seul écrivain,
     et le tableau de bord ne doit jamais bloquer un run dbt en cours.
 
-    Cache de 90 s : la donnée amont ne change qu'à chaque collecte (30 min au
+    Cache de 90 s : la donnée amont ne change qu'à chaque collecte (une heure au
     mieux), donc interroger DuckDB à chaque interaction de widget était du
     gaspillage pur - c'était la principale source de latence perçue.
 
@@ -1036,7 +1054,7 @@ with st.sidebar:
         disabled=not auto_refresh,
         help=(
             "Cadence de rechargement de la page. La collecte, elle, tourne "
-            "toutes les 30 min : au-delà, aucune donnée nouvelle n'arrive."
+            "une fois par heure : au-delà, aucune donnée nouvelle n'arrive."
         ),
     )
     interval_seconds = interval_choices[interval_label]
@@ -1047,7 +1065,7 @@ with st.sidebar:
 
     st.divider()
     st.caption(
-        f"Collecte planifiée toutes les {SCHEDULE_MINUTES} min "
+        f"Collecte planifiée {cadence_lisible(SCHEDULE_MINUTES)} "
         "(GitHub Actions en production, Dagster en local)."
     )
 
@@ -1069,7 +1087,7 @@ if not ready:
     st.warning(message)
     st.info(
         "En attente de la première collecte. Sur le déploiement public, le "
-        "workflow *Collecte planifiée* remplit le lac dans les 30 minutes ; "
+        "workflow *Collecte planifiée* remplit le lac dans l'heure ; "
         "on peut aussi le déclencher manuellement depuis l'onglet Actions.",
     )
     st.stop()
@@ -2955,8 +2973,8 @@ def _render_body() -> None:
 
     # Seuils calibrés sur le comportement RÉEL du cron GitHub Actions, pas sur
     # sa cadence théorique : mesure faite sur ce dépôt, les écarts entre deux
-    # collectés vont de 50 min à plus de 3 h (GitHub exécute les crons "au
-    # mieux"). Des seuils calqués sur les 30 min nominales afficheraient une
+    # collectes vont de 50 min à plus de 3 h (GitHub exécute les crons "au
+    # mieux"). Des seuils calqués sur la cadence nominale afficheraient une
     # alerte en permanence, ce qui reviendrait à n'alerter sur rien.
     if age_minutes <= NOMINAL_MAX_MINUTES:
         status_chip(

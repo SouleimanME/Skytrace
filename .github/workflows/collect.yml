@@ -19,13 +19,28 @@ name: Collecte planifiee
 
 on:
   schedule:
-    # Toutes les 30 minutes, mais DECALE des heures rondes (7 et 37 plutot
-    # que 0 et 30). GitHub execute les crons "au mieux" et la contention est
-    # maximale aux minutes rondes, ou tout le monde planifie : mesure faite
-    # sur ce depot, les ecarts reels allaient de 52 a 226 min. Se decaler
-    # reduit sensiblement l'attente. Les trous restants sont assumes et
-    # rendus visibles par le bandeau de fraicheur du tableau de bord.
-    - cron: "7,37 * * * *"
+    # Une fois par heure, DECALE des heures rondes ou la contention est
+    # maximale : GitHub execute les crons "au mieux" et tout le monde
+    # planifie a la minute zero. Mesure faite sur ce depot, les ecarts reels
+    # allaient de 52 a 226 min.
+    #
+    # POURQUOI UNE HEURE ET NON TRENTE MINUTES. Deux raisons, et la seconde
+    # compte davantage.
+    #
+    # D'abord parce que demander plus ne donnait pas plus : a 48 demandes par
+    # jour, GitHub n'en honorait qu'une quinzaine. L'ecart median mesure
+    # etait de 80 min, soit plus du double de la cadence annoncee. Reclamer
+    # une cadence que l'ordonnanceur ne tient pas ne collecte rien de plus,
+    # cela rend seulement le decalage illisible.
+    #
+    # Ensuite parce qu'une heure EST la resolution de l'analyse. La
+    # correlation trafic / NO2 est horaire, la meteo d'Open-Meteo est
+    # horaire : un releve par heure est la cadence du sujet, pas un
+    # compromis de repli.
+    #
+    # Les trous restants sont assumes et rendus visibles par le bandeau de
+    # fraicheur du tableau de bord.
+    - cron: "17 * * * *"
   workflow_dispatch: {} # declenchement manuel depuis l'onglet Actions
 
 concurrency:
@@ -47,6 +62,8 @@ jobs:
       SKYTRACE_R2_BUCKET: ${{ secrets.SKYTRACE_R2_BUCKET }}
       SKYTRACE_R2_ACCESS_KEY_ID: ${{ secrets.SKYTRACE_R2_ACCESS_KEY_ID }}
       SKYTRACE_R2_SECRET_ACCESS_KEY: ${{ secrets.SKYTRACE_R2_SECRET_ACCESS_KEY }}
+      # Facultatif : sans lui, l'etape de battement est simplement sautee.
+      HEARTBEAT_URL: ${{ secrets.SKYTRACE_HEARTBEAT_URL }}
 
     steps:
       - uses: actions/checkout@v4
@@ -78,3 +95,36 @@ jobs:
         # si un test dur echoue sur la donnee fraiche, le workflow passe au
         # rouge - un signal honnete et visible.
         run: skytrace pipeline
+
+      - name: Publication de l'etat du pipeline
+        # Document JSON a la racine du lac, lisible sans identifiants si le
+        # bucket expose une adresse publique. Publie APRES la collecte, et
+        # seulement si elle a reussi : un etat publie apres un echec
+        # annoncerait une fraicheur qui n'existe pas.
+        run: skytrace publier-sante
+
+      - name: Battement vers le moniteur externe
+        # LE SEUL SIGNAL QUI DETECTE L'ARRET DES CRONS, et il fonctionne a
+        # l'envers des autres.
+        #
+        # Les autres surveillances INTERROGENT le pipeline. Elles ne peuvent
+        # donc rien dire quand ce qui les execute s'arrete : le 26 aout 2026,
+        # GitHub a cesse d'executer les taches planifiees du compte et les
+        # trois surveillances se sont tues avec la collecte. Le document de
+        # sante ci-dessus a la meme faiblesse : c'est un fichier statique, il
+        # se fige sur son dernier contenu et continue d'afficher "OK".
+        #
+        # Ici c'est le pipeline qui ANNONCE qu'il a tourne. L'absence
+        # d'annonce est le signal, et une absence ne peut pas etre falsifiee
+        # par un composant a l'arret. Le service tiers alerte quand le
+        # battement n'arrive pas dans le delai imparti - que la cause soit
+        # GitHub, R2, OpenSky ou le reseau.
+        #
+        # L'etape ne s'execute que si tout ce qui precede a reussi : un
+        # battement envoye apres un echec dirait "tout va bien" alors que
+        # rien n'a ete collecte.
+        #
+        # Sans le secret, l'etape ne fait rien : le depot reste clonable et
+        # utilisable sans compte chez un tiers.
+        if: ${{ env.HEARTBEAT_URL != '' }}
+        run: curl --fail --silent --show-error --max-time 20 --retry 3 "$HEARTBEAT_URL"

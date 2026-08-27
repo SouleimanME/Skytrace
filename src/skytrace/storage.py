@@ -208,3 +208,84 @@ def check_connectivity(settings: Settings | None = None) -> str:
 
     assert back.num_rows == 1  # noqa: S101 - controle interne de sante
     return result.uri
+
+
+#: Cle du document de sante, a la racine du lac et non sous `raw/`.
+#:
+#: Sous `raw/`, il serait melange aux donnees brutes que dbt lit avec des
+#: motifs larges, et finirait un jour dans une source. Un document
+#: d'exploitation n'est pas de la donnee metier : il vit a cote.
+HEALTH_KEY = "sante.json"
+
+#: Au-dela, la collecte est consideree a l'arret. Meme valeur que le seuil
+#: de `skytrace watchdog` : deux seuils differents pour la meme question
+#: finiraient par se contredire.
+HEALTH_STALE_AFTER_HOURS = 10
+
+
+def build_health_document(settings: Settings | None = None) -> dict:
+    """Etat du pipeline, tel qu'un tiers peut le lire sans identifiants.
+
+    Le contenu est deliberement plat et stable : c'est un contrat public.
+    Ajouter une cle est sans danger, en renommer une casse les lecteurs.
+    """
+    from datetime import UTC, datetime
+
+    settings = settings or get_settings()
+    age = newest_snapshot_age_seconds(settings)
+    maintenant = datetime.now(UTC)
+
+    if age is None:
+        etat, age_heures = "AUCUNE_DONNEE", None
+    else:
+        age_heures = round(age / 3600, 2)
+        etat = "OK" if age_heures <= HEALTH_STALE_AFTER_HOURS else "COLLECTE_A_L_ARRET"
+
+    return {
+        "etat": etat,
+        "publie_le": maintenant.isoformat(timespec="seconds"),
+        "dernier_releve_il_y_a_heures": age_heures,
+        "seuil_heures": HEALTH_STALE_AFTER_HOURS,
+        # AVERTISSEMENT DESTINE AU LECTEUR, ET IL EST ESSENTIEL. Ce document
+        # est un fichier statique : il ne se reevalue pas tout seul. Si la
+        # collecte s'arrete, plus personne ne le reecrit et il se fige sur
+        # son dernier contenu - donc sur "OK". Un moniteur qui se contente
+        # d'y chercher le mot OK ne verra jamais l'arret qu'il est cense
+        # detecter. Il faut comparer `publie_le` a l'heure courante, ce que
+        # les moniteurs par mot-cle ne savent pas faire.
+        "avertissement": (
+            "Document statique : il se fige si la publication s'arrete. "
+            "Comparer publie_le a l'heure courante ; ne pas se fier au seul champ etat."
+        ),
+    }
+
+
+def publish_health(settings: Settings | None = None) -> WriteResult:
+    """Publie le document de sante a la racine du lac.
+
+    Ecrit en JSON et non en Parquet : la cible est un lecteur HTTP quelconque
+    - un moniteur, un navigateur, une page d'etat - qui n'a ni pyarrow ni
+    identifiants R2. Le fichier n'est lisible publiquement que si le bucket
+    expose une adresse publique, ce qui se configure chez Cloudflare et non
+    ici ; sans cela il reste ecrit, mais prive.
+    """
+    import json
+
+    settings = settings or get_settings()
+    corps = json.dumps(build_health_document(settings), indent=2, ensure_ascii=False)
+    donnees = corps.encode("utf-8")
+
+    if settings.uses_r2:
+        fs = _s3_filesystem(settings)
+        path = f"{settings.r2_bucket}/{HEALTH_KEY}"
+        with fs.open_output_stream(path, metadata={"Content-Type": "application/json"}) as flux:
+            flux.write(donnees)
+        uri = f"s3://{settings.r2_bucket}/{HEALTH_KEY}"
+        logger.info("Sante publiee -> %s (%d octets)", uri, len(donnees))
+        return WriteResult(uri=uri, size_bytes=len(donnees))
+
+    local = settings.resolved_data_dir / HEALTH_KEY
+    local.parent.mkdir(parents=True, exist_ok=True)
+    local.write_bytes(donnees)
+    logger.info("Sante publiee -> %s (%d octets)", local, len(donnees))
+    return WriteResult(uri=str(local), size_bytes=len(donnees))

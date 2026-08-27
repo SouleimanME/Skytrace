@@ -104,7 +104,7 @@ skytrace dbt show --limit 15 --inline "select airport_label, sum(distinct_aircra
 - **En local** : `skytrace dagster`, puis activer les plannings dans
   l'onglet Automation. La collecte se declenche alors toute seule.
 - **Dans le cloud** : c'est deja le cas. Le workflow GitHub Actions
-  *Collecte planifiee* collecte toutes les 30 minutes et publie les donnees
+  *Collecte planifiee* collecte une fois par heure et publie les donnees
   dans le depot ; le tableau de bord Streamlit se met a jour a chaque push.
 
 ## 5. Verifier que tout est sain

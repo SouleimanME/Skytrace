@@ -28,9 +28,13 @@ name: Veille de la collecte
 
 on:
   schedule:
-    # Toutes les six heures, decale des heures rondes ou la contention est
+    # Deux fois par jour, decale des heures rondes ou la contention est
     # maximale (meme raison que pour la collecte).
-    - cron: "41 2,8,14,20 * * *"
+    #
+    # Une veille n'a pas besoin d'etre frequente, elle a besoin d'etre
+    # fiable. Detecter en douze heures un arret de collecte est amplement
+    # suffisant : le seuil d'alerte est lui-meme a dix heures.
+    - cron: "41 5,17 * * *"
   workflow_dispatch: {}
 
 concurrency:
@@ -77,4 +81,4 @@ jobs:
         # Six heures : les ecarts mesures entre deux collectes vont de la
         # minute a plus de trois heures, le cron GitHub n'etant pas ponctuel.
         # Un seuil serre alerterait en permanence, donc n'alerterait plus.
-        run: skytrace watchdog --max-age-hours 6
+        run: skytrace watchdog --max-age-hours 10

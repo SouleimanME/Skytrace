@@ -7,7 +7,7 @@ L'idee tient en une phrase : **GitHub Actions joue le role de
 l'ordonnanceur, Streamlit Community Cloud celui de la vitrine.**
 
 ```
-1. GitHub Actions (collect.yml), toutes les 30 min :
+1. GitHub Actions (collect.yml), une fois par heure :
    collecte OpenSky + dbt build (qualite)
         |
         |  git commit + push des fichiers Parquet
@@ -56,7 +56,7 @@ Le depot ne contient volontairement aucune donnee au depart. Pour amorcer :
 
 Cette execution collecte un premier snapshot, telecharge le referentiel
 aeroports, et committe le tout. Ensuite le cron prend le relais toutes les
-30 minutes, sans intervention.
+une heure, sans intervention.
 
 > Aucun secret n'est requis : la collecte tourne en mode anonyme OpenSky
 > (400 credits/jour, largement suffisant). Pour un quota superieur, ajouter
@@ -87,7 +87,7 @@ ne porte plus que le code, et le volume n'est borne que par la retention
 
 ## La limite a connaitre : le cron GitHub n'est pas ponctuel
 
-Le workflow est declare toutes les 30 minutes, mais GitHub execute les crons
+Le workflow est declare une fois par heure, mais GitHub execute les crons
 **"au mieux"**, sans garantie de ponctualite - d'autant plus sur un depot
 public peu actif. Mesure faite sur ce projet, les ecarts reels entre deux
 collectes consecutives :
@@ -97,9 +97,14 @@ collectes consecutives :
 
 Deux consequences assumees dans le code :
 
-1. **Le cron est decale des minutes rondes** (`7,37 * * * *` plutot que
-   `*/30`). La contention est maximale a :00 et :30, ou tout le monde
+1. **Le cron est decale des minutes rondes** (`17 * * * *` plutot que
+   `0 * * * *`). La contention est maximale a :00, ou tout le monde
    planifie ; se decaler reduit sensiblement l'attente.
+2. **La cadence demandee est celle que l'ordonnanceur peut tenir.** Elle a
+   ete ramenee de 30 a 60 minutes : sur 48 executions quotidiennes demandees,
+   GitHub n'en honorait qu'une quinzaine. Reclamer une cadence qui n'est pas
+   tenue ne collecte rien de plus, cela rend seulement le decalage illisible.
+   Une heure est de surcroit la resolution de l'analyse trafic / NO2.
 2. **Les seuils de fraicheur du tableau de bord sont calibres sur le
    comportement observe**, pas sur la cadence theorique : vert jusqu'a
    75 min, orange jusqu'a 4 h, rouge au-dela. Alerter des 35 min afficherait
@@ -179,16 +184,27 @@ fois ? On interroge donc le lac et non l'entrepot, qu'une reconstruction
 fraiche a partir d'un lac fige rendrait faussement rassurant.
 
 ```bash
-skytrace watchdog --max-age-hours 6
+skytrace watchdog --max-age-hours 10
 ```
 
 La commande sort en erreur si le dernier releve depasse le seuil, ce qui fait
 passer le workflow `veille.yml` au rouge et declenche le courriel de GitHub.
 Pas de service de plus, pas de compte de plus.
 
-Le seuil de six heures est large a dessein : les ecarts mesures entre deux
-collectes vont de la minute a plus de trois heures. Un seuil serre alerterait
-en permanence, c'est-a-dire n'alerterait plus.
+Le seuil de dix heures est large a dessein : les ecarts mesures entre deux
+collectes vont de la minute a plus de trois heures, et la cadence est passee
+a une collecte par heure. Un seuil serre alerterait en permanence,
+c'est-a-dire n'alerterait plus.
+
+### L'angle mort de cette veille
+
+Elle ne peut pas detecter que GitHub a cesse d'executer les crons. C'est un
+cron GitHub qui surveille des crons GitHub : il partage le sort de ce qu'il
+observe. C'est arrive le 26 aout 2026, la panne a dure 32 heures, et rien
+n'a alerte.
+
+Le complement vit donc en dehors : voir
+[`surveillance-externe.md`](surveillance-externe.md).
 
 **Limite assumee.** Si GitHub desactive les taches planifiees du depot, il
 desactive aussi celle-ci : la veille s'eteint avec ce qu'elle surveille. Elle

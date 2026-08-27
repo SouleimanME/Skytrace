@@ -358,12 +358,14 @@ constructeurs).
 Un onglet **Coulisses** rassemble ce qu'un tableau de bord montre rarement :
 ce qu'il vaut lui-même.
 
-- **Ponctualité réelle de la collecte.** Le cron est déclaré toutes les
-  30 minutes ; l'écart médian observé est de 73 minutes, et 15 % seulement des
-  intervalles tiennent dans les 45 minutes. GitHub exécute les tâches
-  planifiées « au mieux » et dépriorise les dépôts publics peu actifs. Les
-  seuils du bandeau de fraîcheur sont calibrés sur cette distribution mesurée,
-  pas sur la cadence théorique.
+- **Ponctualité réelle de la collecte.** Le cron est déclaré une fois par
+  heure. Il l'était toutes les 30 minutes, mais sur 48 exécutions quotidiennes
+  demandées GitHub n'en honorait qu'une quinzaine, pour un écart médian de
+  73 minutes : réclamer une cadence que l'ordonnanceur ne tient pas ne
+  collecte rien de plus, cela rend seulement le décalage illisible. GitHub
+  exécute les tâches planifiées « au mieux » et dépriorise les dépôts publics
+  peu actifs. Les seuils du bandeau de fraîcheur sont calibrés sur cette
+  distribution mesurée, pas sur la cadence théorique.
 - **Couverture du réseau, chiffrée.** 85 % des positions viennent de deux
   régions, l'Europe et l'Amérique du Nord. La carte mesure autant la densité
   des récepteurs bénévoles que celle du trafic : comparer des volumes entre
@@ -461,7 +463,7 @@ Il se déploie donc gratuitement, **sans serveur à administrer** :
 
 - **GitHub Actions** joue le rôle de l'ordonnanceur en production : le
   workflow [`collect.yml`](.github/workflows/collect.yml) collecte un
-  snapshot toutes les 30 min, le transforme, et publie les fichiers Parquet
+  snapshot chaque heure, le transforme, et publie les fichiers Parquet
   dans le dépôt. Gratuit et illimité sur un dépôt public, aucun secret requis
   (mode anonyme OpenSky).
 - **Streamlit Community Cloud** héberge le tableau de bord. Au démarrage, il
@@ -473,6 +475,8 @@ GitHub Actions est son équivalent cloud gratuit. Distinguer l'outil de
 développement du mécanisme de déploiement fait partie du métier.
 
 **Marche à suivre complète : [`docs/deploiement.md`](docs/deploiement.md).**
+**Surveillance qui survit à une panne de GitHub Actions :
+[`docs/surveillance-externe.md`](docs/surveillance-externe.md).**
 
 ## Structure du dépôt
 

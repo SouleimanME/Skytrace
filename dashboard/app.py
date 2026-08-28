@@ -131,6 +131,18 @@ PHASE_LABELS = {
 }
 
 
+def duree_lisible(minutes: int) -> str:
+    """Une duree en minutes, ecrite comme on la lit.
+
+    Sert aux etiquettes de tranches, qui doivent rester lisibles quelle que
+    soit la cadence : "120 min" se lit moins bien que "2 h".
+    """
+    if minutes < 60:
+        return f"{minutes} min"
+    heures = minutes / 60
+    return f"{heures:.0f} h" if heures.is_integer() else f"{heures:.1f} h"
+
+
 def cadence_lisible(minutes: int) -> str:
     """Formule une cadence comme on la dit, pas comme on la stocke.
 
@@ -864,7 +876,11 @@ REBUILD_INTERVAL_SECONDS = 600
 #: l'une manque, ce n'est pas une requete a corriger, c'est un entrepot en
 #: retard sur le code.
 REQUIRED_COLUMNS = {
-    "marts.fct_aircraft_positions": ("emergency_kind", "is_position_stale"),
+    "marts.fct_aircraft_positions": (
+        "emergency_kind",
+        "is_position_stale",
+        "ingestion_region",
+    ),
     "marts.dim_aircraft": ("airline_source",),
     "marts.fct_aircraft_predictions": (
         "predicted_commercial",
@@ -2527,7 +2543,7 @@ def render_diurnal_cycle() -> None:
 def render_collection_punctuality() -> None:
     """Ponctualité réelle de la collecte, mesurée et non supposée.
 
-    Le cron est déclaré toutes les trente minutes. GitHub exécute les tâches
+    Le cron est déclaré une fois par heure. GitHub exécute les tâches
     planifiées "au mieux", et l'écart entre deux relevés est une donnée que
     le pipeline produit sur lui-même. L'afficher plutôt que la cadence
     nominale, c'est la difference entre un tableau de bord qui decrit ce qui
@@ -2559,13 +2575,15 @@ def render_collection_punctuality() -> None:
     # de la distribution contre l'axe, et un axe logarithmique ne sauve rien
     # puisque Plotly bine en linéaire AVANT de tracer - les barres tombent
     # alors à côté de leur place, jusqu'à disparaître.
-    bornes = [0, SCHEDULE_MINUTES + 5, 60, 120, 240, float("inf")]
+    ponctuel = min(SCHEDULE_MINUTES + 5, 2 * SCHEDULE_MINUTES - 1)
+    paliers = [2 * SCHEDULE_MINUTES, 4 * SCHEDULE_MINUTES, 8 * SCHEDULE_MINUTES]
+    bornes = [0, ponctuel, *paliers, float("inf")]
     etiquettes = [
-        f"moins de {SCHEDULE_MINUTES + 5} min",
-        f"{SCHEDULE_MINUTES + 5} min - 1 h",
-        "1 - 2 h",
-        "2 - 4 h",
-        "plus de 4 h",
+        f"moins de {ponctuel} min",
+        f"{ponctuel} min - {duree_lisible(paliers[0])}",
+        f"{duree_lisible(paliers[0])} - {duree_lisible(paliers[1])}",
+        f"{duree_lisible(paliers[1])} - {duree_lisible(paliers[2])}",
+        f"plus de {duree_lisible(paliers[2])}",
     ]
     tranches = (
         pd.cut(ecarts["minutes"], bins=bornes, labels=etiquettes, right=False)
@@ -2706,6 +2724,101 @@ LIMITES = """
 Chacune de ces limites est mesurée ailleurs dans cet onglet plutôt
 qu'affirmée.
 """
+
+
+def render_collection_footprint() -> None:
+    """La zone REELLEMENT interrogee a chaque relevé, et pourquoi elle compte.
+
+    Le collecteur interroge une fenêtre géographique. Elle a changé au cours
+    du projet, et rien ne le montrait : l'historique mélange trois empreintes,
+    `france`, `europe` et `world`. Un relevé France compte forcément moins
+    d'aéronefs qu'un relevé mondial, sans que le trafic ait bougé.
+
+    Conséquence directe sur toute lecture de cette page : **un creux dans une
+    série peut n'être qu'un cadrage plus étroit**. C'est le genre d'artefact
+    qui se prend pour une tendance, et qui ne se voit que si on le montre.
+
+    Cette section existe parce que le cas s'est produit. Un relevé a été
+    collecté par erreur en zone `europe` alors que la production interroge le
+    monde : la carte n'affichait que l'Europe, et rien dans le tableau de bord
+    ne l'expliquait. La donnée portait pourtant la réponse depuis le début.
+    """
+    empreintes = load(
+        """
+        select
+            ingestion_region                     as zone,
+            count(distinct snapshot_at)          as releves,
+            min(snapshot_at)                     as debut,
+            max(snapshot_at)                     as fin,
+            median(positions)                    as aeronefs_median
+        from (
+            select ingestion_region, snapshot_at, count(*) as positions
+            from marts.fct_aircraft_positions
+            group by 1, 2
+        )
+        group by 1
+        order by releves desc
+        """
+    )
+    if empreintes.empty:
+        return
+
+    st.subheader("Empreinte de collecte")
+
+    st.markdown(
+        '<div class="card-grid">'
+        + "".join(
+            stat_card(
+                str(ligne["zone"] or "non renseignée").capitalize(),
+                f"{int(ligne['aeronefs_median']):,}".replace(",", " "),
+                f"{int(ligne['releves'])} relevés · médiane d'aéronefs",
+            )
+            for _, ligne in empreintes.iterrows()
+        )
+        + "</div>",
+        unsafe_allow_html=True,
+    )
+
+    if len(empreintes) > 1:
+        st.warning(
+            "**L'historique mélange plusieurs fenêtres de collecte.** Les "
+            "écarts d'effectif entre relevés de zones différentes ne mesurent "
+            "pas le trafic, ils mesurent le cadrage. Toute série temporelle "
+            "lue sur cette page doit être interprétée avec cette réserve, ou "
+            "restreinte à une seule zone.",
+        )
+
+    lignes = []
+    for _, ligne in empreintes.iterrows():
+        lignes.append(
+            f"- **{str(ligne['zone'] or 'non renseignée')}** : "
+            f"{int(ligne['releves'])} relevés, du {str(ligne['debut'])[:10]} "
+            f"au {str(ligne['fin'])[:10]}, "
+            f"{int(ligne['aeronefs_median']):,} aéronefs en médiane".replace(",", " ")
+        )
+    st.markdown("\n".join(lignes))
+
+    derniere = load(
+        """
+        select ingestion_region as zone, count(*) as aeronefs
+        from marts.fct_aircraft_positions
+        where snapshot_at = (select max(snapshot_at) from marts.fct_aircraft_positions)
+        group by 1
+        """
+    )
+    if not derniere.empty:
+        zone = str(derniere.iloc[0]["zone"])
+        if zone != "world":
+            st.error(
+                f"Le dernier relevé a été collecté en zone **{zone}**, et non "
+                "sur le monde. La carte du radar ne montre donc qu'une partie "
+                "du trafic observable : ce n'est pas une baisse d'activité.",
+            )
+        else:
+            st.caption(
+                f"Dernier relevé collecté sur la zone **{zone}**, "
+                f"{int(derniere.iloc[0]['aeronefs']):,} aéronefs.".replace(",", " ")
+            )
 
 
 def render_model_drift() -> None:
@@ -3097,6 +3210,8 @@ def _render_body() -> None:
         render_collection_punctuality()
         st.divider()
         render_coverage()
+        st.divider()
+        render_collection_footprint()
         st.divider()
         render_model_drift()
         st.divider()

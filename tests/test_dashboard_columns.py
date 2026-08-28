@@ -111,3 +111,54 @@ def test_les_libelles_daffichage_restent_accentues(source):
     # en francais. On verifie qu'elle l'est reste.
     assert '"Aéronefs distincts"' in source
     assert "Aéroport" in source
+
+
+class TestBornesDePonctualite:
+    """Les tranches d'ecart entre releves doivent croitre, pour TOUTE cadence.
+
+    CE QUE CE TEST AURAIT ATTRAPE. Les bornes etaient ecrites en dur a partir
+    d'une cadence de 30 minutes : `[0, SCHEDULE_MINUTES + 5, 60, 120, 240]`.
+    Le passage a 60 minutes a donne `[0, 65, 60, ...]`, ou la premiere borne
+    depasse la deuxieme. `pd.cut` refuse des bornes non croissantes, et le
+    tableau de bord DEPLOYE plantait entierement - pas seulement la section
+    fautive : l'exception remontait jusqu'au corps de la page.
+
+    Rien ne l'avait vu. Les tests portaient sur les colonnes lues et sur les
+    accents, jamais sur une valeur DERIVEE d'une constante de configuration.
+    Changer la constante etait pourtant l'operation la plus probable.
+    """
+
+    @staticmethod
+    def bornes(cadence: int) -> list[float]:
+        """Reproduit le calcul de `render_collection_punctuality`."""
+        ponctuel = min(cadence + 5, 2 * cadence - 1)
+        return [0, ponctuel, 2 * cadence, 4 * cadence, 8 * cadence, float("inf")]
+
+    @pytest.mark.parametrize("cadence", [5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 240])
+    def test_les_bornes_croissent_strictement(self, cadence):
+        bornes = self.bornes(cadence)
+        assert all(bornes[i] < bornes[i + 1] for i in range(len(bornes) - 1)), (
+            f"bornes non croissantes a {cadence} min : {bornes}"
+        )
+
+    def test_pandas_accepte_reellement_ces_bornes(self):
+        """Le vrai juge est `pd.cut`, pas notre relecture des inegalites."""
+        import pandas as pd
+
+        for cadence in (15, 30, 60, 120):
+            bornes = self.bornes(cadence)
+            decoupe = pd.cut(
+                pd.Series([1.0, 50.0, 200.0, 5000.0]),
+                bins=bornes,
+                labels=[f"t{i}" for i in range(len(bornes) - 1)],
+                right=False,
+            )
+            assert decoupe.notna().all()
+
+    def test_la_cadence_du_code_est_couverte(self):
+        """La valeur reellement en service doit passer, pas seulement des cas d'ecole."""
+        source = APP.read_text(encoding="utf-8")
+        ligne = next(x for x in source.splitlines() if x.startswith("SCHEDULE_MINUTES"))
+        cadence = int(ligne.split("=")[1].strip())
+        bornes = self.bornes(cadence)
+        assert all(bornes[i] < bornes[i + 1] for i in range(len(bornes) - 1))

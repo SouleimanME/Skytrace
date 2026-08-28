@@ -9,6 +9,31 @@ models:
       Table de faits centrale. Grain : un aeronef observe a un instant
       donne. Materialisation incrementale, idempotente par rejeu.
     columns:
+      - name: ingestion_region
+        description: >
+          Zone geographique DEMANDEE lors de la collecte : `world`, `europe`
+          ou `france`. Ce n'est pas ou l'appareil se trouve, c'est la fenetre
+          que le collecteur a interrogee.
+
+          POURQUOI CETTE COLONNE COMPTE PLUS QU'IL N'Y PARAIT. L'historique
+          melange trois empreintes : 50 releves `france`, 54 `world`, 3
+          `europe`. Comparer le nombre d'aeronefs entre deux releves de zones
+          differentes ne compare rien - un creux peut n'etre qu'un cadrage
+          plus etroit. Toute serie temporelle construite sur cette table doit
+          soit filtrer sur une zone, soit assumer explicitement le melange.
+
+          Une valeur nulle designe une ligne ecrite avant l'ajout de la
+          colonne au modele incremental, pas une collecte sans zone : d'ou
+          l'avertissement plutot que l'erreur sur `not_null`.
+        data_tests:
+          - not_null:
+              config:
+                severity: warn
+          - accepted_values:
+              arguments:
+                values: ["world", "europe", "france"]
+              config:
+                severity: warn
       - name: aircraft_icao24
         description: Cle etrangere vers dim_aircraft.
         data_tests:

@@ -6,6 +6,14 @@ models:
       Positions d'aeronefs nettoyees et typees, correspondance 1 pour 1
       avec la couche bronze moins les lignes sans position exploitable.
     columns:
+      - name: ingestion_region
+        description: >
+          Zone geographique demandee lors de la collecte (`world`, `europe`,
+          `france`). La fenetre interrogee, non la position de l'appareil.
+        data_tests:
+          - not_null:
+              config:
+                severity: warn
       - name: aircraft_icao24
         description: Adresse OACI 24 bits, en minuscules. Identifiant de l'appareil.
         data_tests:

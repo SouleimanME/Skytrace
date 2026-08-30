@@ -94,7 +94,31 @@ jobs:
         # absents + dbt build (lit R2). dbt build sert de garde-fou qualite :
         # si un test dur echoue sur la donnee fraiche, le workflow passe au
         # rouge - un signal honnete et visible.
-        run: skytrace pipeline
+        #
+        # POURQUOI TROIS TENTATIVES. Ce workflow appelle deux services par le
+        # reseau : OpenSky et R2. Un delai depasse, un 502 passager ou une
+        # coupure de quelques secondes faisaient echouer la collecte et
+        # envoyaient un courriel - pour une panne qui n'existait plus a la
+        # minute suivante.
+        #
+        # Une alerte qui ne demande aucune action est pire qu'inutile : elle
+        # apprend a ignorer les suivantes. On retente donc, espace, et on ne
+        # signale que ce qui resiste aux trois essais. Le pipeline est
+        # idempotent - la table de faits est incrementale en `delete+insert`
+        # sur la cle (appareil, instant) - donc rejouer ne duplique rien.
+        run: |
+          for tentative in 1 2 3; do
+            echo "::group::Tentative $tentative/3"
+            if skytrace pipeline; then
+              echo "::endgroup::"
+              exit 0
+            fi
+            echo "::endgroup::"
+            echo "Tentative $tentative en echec."
+            [ "$tentative" -lt 3 ] && sleep 60
+          done
+          echo "::error::Trois tentatives de collecte ont echoue."
+          exit 1
 
       - name: Publication de l'etat du pipeline
         # Document JSON a la racine du lac, lisible sans identifiants si le

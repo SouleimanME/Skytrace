@@ -46,6 +46,7 @@ import time
 from urllib.parse import urljoin
 
 import httpx
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Frame, Page, sync_playwright
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 
@@ -72,6 +73,25 @@ PAGE_TIMEOUT_MS = 60_000
 #: Duree pendant laquelle la session reste ouverte apres affichage. C'est
 #: elle qui constitue la "visite" ; partir aussitot la rendrait inutile.
 DWELL_MS = 10_000
+
+#: Nombre de tentatives avant de conclure a une panne.
+#:
+#: POURQUOI PLUSIEURS. La premiere version n'en faisait qu'une, et le verdict
+#: reposait sur une unique verification HTTP finale. Le 30 aout 2026, le
+#: workflow a echoue et envoye une alerte alors que l'application repondait
+#: parfaitement : un alea reseau, ou un demarrage de conteneur plus lent que
+#: d'habitude, suffisait a declencher un courriel d'alarme.
+#:
+#: Une alerte fausse coute plus cher qu'une alerte manquante : elle apprend a
+#: ignorer les suivantes. Piloter un navigateur sans fil est intrinsequement
+#: capricieux - un clic peut manquer sa cible, une page peut mettre trop
+#: longtemps - et ces aleas ne disent rien de la sante de l'application.
+TENTATIVES = 3
+
+#: Pause entre deux tentatives. Assez longue pour qu'un conteneur en cours de
+#: demarrage ait le temps de repondre, assez courte pour tenir dans le
+#: workflow.
+PAUSE_ENTRE_TENTATIVES_S = 20
 
 
 def is_awake(url: str, *, timeout: float = 20.0) -> bool:
@@ -159,19 +179,47 @@ def visit(url: str, *, endormie: bool) -> bool:
 
 
 def main(argv: list[str]) -> int:
+    """Reveille l'application, et ne crie que si elle reste muette.
+
+    LE VERDICT PORTE SUR L'APPLICATION, PAS SUR LE NAVIGATEUR. Ce qui compte
+    est l'etat final : l'application repond-elle ? Un clic qui manque sa
+    cible ou une page lente sont des aleas de pilotage, pas des pannes. Faire
+    echouer le workflow dessus revient a mesurer la fiabilite de Playwright
+    au lieu de celle du service, et a envoyer des alertes que rien ne
+    justifie.
+    """
     if len(argv) != 2:
         print(f"usage : {argv[0]} <url de l'application>", file=sys.stderr)
         return 2
 
     url = argv[1].rstrip("/") + "/"
-    endormie = not is_awake(url)
-    print(f"{url} : {'endormie' if endormie else 'eveillee'}")
 
-    if visit(url, endormie=endormie):
-        print("l'application repond")
+    for tentative in range(1, TENTATIVES + 1):
+        endormie = not is_awake(url)
+        print(
+            f"tentative {tentative}/{TENTATIVES} - {url} : {'endormie' if endormie else 'eveillee'}"
+        )
+
+        try:
+            if visit(url, endormie=endormie):
+                print("l'application repond")
+                return 0
+        except (PlaywrightTimeout, PlaywrightError) as exc:
+            # Un navigateur pilote est capricieux : on retente plutot que de
+            # conclure a une panne du service.
+            print(f"  alea de pilotage : {type(exc).__name__}", file=sys.stderr)
+
+        if tentative < TENTATIVES:
+            time.sleep(PAUSE_ENTRE_TENTATIVES_S)
+
+    # Dernier mot a l'application elle-meme. Le navigateur a pu echouer alors
+    # que le service, lui, est debout - c'est exactement le cas qui produisait
+    # de fausses alertes.
+    if is_awake(url):
+        print("l'application repond, malgre l'echec du pilotage du navigateur")
         return 0
 
-    print("l'application ne repond pas", file=sys.stderr)
+    print(f"l'application ne repond pas apres {TENTATIVES} tentatives", file=sys.stderr)
     return 1
 
 

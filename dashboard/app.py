@@ -870,6 +870,10 @@ def warehouse_is_ready() -> tuple[bool, str]:
 #: intervalle régulier (le `bucket` temporel casse le cache).
 REBUILD_INTERVAL_SECONDS = 600
 
+#: Plafond de duree d'une reconstruction. Une dizaine de secondes suffisent en
+#: pratique ; ce plafond n'existe que pour garantir que la page rend la main.
+REBUILD_TIMEOUT_SECONDS = 300
+
 
 #: Colonnes que le tableau de bord LIT et que l'entrepot doit donc porter.
 #: Cette liste est la contrepartie de la promesse faite par les marts : si
@@ -998,12 +1002,53 @@ def ensure_warehouse_built(bucket: int) -> None:
         env={**os.environ, **SETTINGS.dbt_env()},
         cwd=str(SETTINGS.dbt_project_dir),
         check=True,
+        # SANS DELAI, UNE RECONSTRUCTION QUI COINCE FIGE LA PAGE POUR TOUJOURS.
+        # dbt lit un lac distant : une connexion R2 qui pend ne rend jamais la
+        # main, et Streamlit attend le sous-processus sans rien afficher.
+        # L'utilisateur voit une page blanche eternelle, pire qu'une erreur.
+        # Une reconstruction complete prend une dizaine de secondes ; cinq
+        # minutes sont donc tres larges tout en restant bornees.
+        timeout=REBUILD_TIMEOUT_SECONDS,
     )
 
 
 # ---------------------------------------------------------------------------
 # En-tête et commandes
 # ---------------------------------------------------------------------------
+def section(titre: str, rendu, *args, **kwargs) -> bool:
+    """Rend une section, et l'ISOLE du reste de la page si elle echoue.
+
+    LA RAISON D'ETRE DE CETTE FONCTION. Streamlit execute le script de haut
+    en bas : une exception non rattrapee dans n'importe quelle section
+    interrompt tout ce qui suit ET efface ce qui precede, remplaces par une
+    page d'erreur. Une borne de tranche mal calculee dans un graphe de
+    ponctualite suffisait donc a faire disparaitre la carte, les indicateurs
+    et l'analyse. C'est arrive.
+
+    Le rapport degats/cause est absurde : la panne d'un panneau accessoire
+    coute la totalite du tableau de bord. Chaque section est desormais
+    autonome. Si l'une tombe, elle affiche son propre message et les autres
+    continuent - le comportement qu'on attend d'une page composee de
+    plusieurs vues independantes.
+
+    Ce n'est PAS un moyen d'ignorer les bogues : l'erreur reste visible, elle
+    est nommee, et le detail technique reste consultable. Elle cesse
+    seulement d'etre contagieuse.
+    """
+    try:
+        rendu(*args, **kwargs)
+        return True
+    except duckdb.IOException:
+        # L'entrepot est en cours de reecriture par une autre session. Ce
+        # n'est pas une panne, c'est une seconde a attendre.
+        st.info(f"« {titre} » : entrepot en cours de mise a jour, reessayer dans un instant.")
+    except Exception as exc:  # noqa: BLE001 - la contagion est le vrai danger
+        st.warning(f"Section « {titre} » indisponible : {type(exc).__name__}.")
+        with st.expander("Detail technique", expanded=False):
+            st.exception(exc)
+    return False
+
+
 def display_region() -> str:
     """Zone du dernier relevé, lue dans la donnée plutôt que dans la config.
 
@@ -1219,6 +1264,8 @@ def selection_scope(positions: pd.DataFrame) -> str:
     donnent donc deux composants distincts, et la sélection est remise à zéro
     plutôt que faussée.
     """
+    if positions.empty:
+        return None
     snapshot = positions["snapshot_at"].iloc[0]
     return f"{snapshot:%Y%m%d%H%M%S}_{len(positions)}"
 
@@ -1623,8 +1670,12 @@ def render_fleet_age() -> None:
         f"Sur {len(ages)} compagnies d'au moins 25 appareils datés, l'écart va "
         f"de **{plus_jeune['age_moyen']:.0f} ans** ({plus_jeune['compagnie']}) à "
         f"**{plus_vieille['age_moyen']:.0f} ans** ({plus_vieille['compagnie']}), "
-        f"soit un facteur {plus_vieille['age_moyen'] / plus_jeune['age_moyen']:.1f}. "
-        "Le fret et le régional exploitent des appareils convertis en fin de "
+        + (
+            f"soit un facteur {plus_vieille['age_moyen'] / plus_jeune['age_moyen']:.1f}. "
+            if plus_jeune["age_moyen"]
+            else ""
+        )
+        + "Le fret et le régional exploitent des appareils convertis en fin de "
         "vie ; le low-cost renouvelle pour la consommation de carburant. "
         "**Biais à connaître** : l'année de construction n'est renseignée que "
         "pour la moitié de la base aéronefs, et les appareils datés ne sont "
@@ -2532,8 +2583,12 @@ def render_diurnal_cycle() -> None:
     st.caption(
         f"Le trafic culmine vers **{int(pic['heure_locale'])} h** locale et "
         f"tombe au plus bas vers **{int(creux['heure_locale'])} h**, dans un "
-        f"rapport de **{pic['positions'] / creux['positions']:.1f} pour 1**. "
-        "L'heure est déduite de la longitude (quinze degrés par heure), pas "
+        + (
+            f"rapport de **{pic['positions'] / creux['positions']:.1f} pour 1**. "
+            if creux["positions"]
+            else "le creux ne portant aucune position mesurable. "
+        )
+        + "L'heure est déduite de la longitude (quinze degrés par heure), pas "
         "du fuseau administratif. Comme la couverture ADS-B est très "
         "majoritairement européenne et nord-américaine, ce cycle est d'abord "
         "celui de ces deux régions."
@@ -3080,7 +3135,17 @@ def _render_body() -> None:
         "select count(distinct airport_id) as n from marts.fct_airport_activity"
     ).iloc[0]["n"]
 
+    # Entrepot vide : le cas du tout premier demarrage, et celui d'une
+    # reconstruction qui a echoue. `max()` rend alors NULL, et tout calcul
+    # d'age en aval leve - depuis l'en-tete, donc avant meme les onglets.
     last_seen = overview["fin"]
+    if last_seen is None or pd.isna(last_seen):
+        st.warning(
+            "L'entrepôt ne contient aucun relevé. La collecte n'a pas encore "
+            "abouti, ou la reconstruction depuis le lac a échoué."
+        )
+        return
+
     age_minutes = (datetime.now(UTC) - last_seen.to_pydatetime()).total_seconds() / 60
     span_hours = (overview["fin"] - overview["debut"]).total_seconds() / 3600
 
@@ -3099,12 +3164,14 @@ def _render_body() -> None:
         status_chip(
             "warn",
             f"COLLECTE RETARDÉE // dernier relevé il y a {age_minutes:.0f} min "
-            "(le cron GitHub est fréquemment différé)",
+            f"({last_seen:%d/%m %H:%M} UTC) - le cron GitHub est fréquemment différé",
         )
     else:
         status_chip(
             "err",
-            f"SIGNAL PERDU // aucune donnée depuis {age_minutes / 60:.1f} h - "
+            f"SIGNAL PERDU // aucune donnée depuis {age_minutes / 60:.1f} h "
+            f"(dernier relevé {last_seen:%d/%m %H:%M} UTC, page rendue "
+            f"{datetime.now(UTC):%d/%m %H:%M} UTC) - "
             "vérifier le workflow Collecte planifiée (onglet Actions)",
         )
 
@@ -3129,6 +3196,8 @@ def _render_body() -> None:
     variation = None
     if len(vol) >= 2:
         precedent = int(vol["aeronefs"].iloc[-2])
+        # Un releve precedent vide donnerait une division par zero, et un
+        # pourcentage de variation n'aurait de toute facon aucun sens.
         if precedent:
             variation = 100 * (en_vol - precedent) / precedent
 
@@ -3186,36 +3255,38 @@ def _render_body() -> None:
         ["Radar", "Trafic", "Flotte", "Analyse", "Coulisses"]
     )
 
+    # Chaque section est isolee : voir `section()`. Une seule d'entre elles
+    # qui echoue ne doit plus emporter la page entiere.
     with radar:
-        render_radar()
+        section("Radar", render_radar)
 
     with trafic:
-        render_snapshot_series()
-        st.divider()
-        render_hourly_trend()
-        st.divider()
-        render_diurnal_cycle()
-        st.divider()
-        render_rankings()
+        for titre, rendu in (
+            ("Série des relevés", render_snapshot_series),
+            ("Tendance horaire", render_hourly_trend),
+            ("Cycle diurne", render_diurnal_cycle),
+            ("Classements", render_rankings),
+        ):
+            section(titre, rendu)
+            st.divider()
 
     with flotte:
-        render_fleet()
+        section("Flotte", render_fleet)
 
     with analyse:
-        render_air_quality()
+        section("Qualité de l'air", render_air_quality)
 
     with coulisses:
-        render_signal_section()
-        st.divider()
-        render_collection_punctuality()
-        st.divider()
-        render_coverage()
-        st.divider()
-        render_collection_footprint()
-        st.divider()
-        render_model_drift()
-        st.divider()
-        render_method()
+        for titre, rendu in (
+            ("Signal et détresses", render_signal_section),
+            ("Ponctualité de la collecte", render_collection_punctuality),
+            ("Couverture du réseau", render_coverage),
+            ("Empreinte de collecte", render_collection_footprint),
+            ("Dérive du modèle", render_model_drift),
+            ("Méthode", render_method),
+        ):
+            section(titre, rendu)
+            st.divider()
 
     # -- Pied de page ------------------------------------------------------
     st.divider()

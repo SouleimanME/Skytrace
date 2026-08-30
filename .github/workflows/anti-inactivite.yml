@@ -1,0 +1,79 @@
+name: Anti-inactivite
+
+# POURQUOI CE WORKFLOW EXISTE, ET C'EST LE PLUS IMPORTANT DES QUATRE.
+#
+# GitHub desactive automatiquement les taches planifiees d'un depot public
+# reste SOIXANTE JOURS sans activite. Ce n'est ni un incident ni un alea :
+# c'est une regle documentee, et elle finira par s'appliquer. Un projet
+# termine n'est plus modifie, donc il s'eteint tout seul, silencieusement,
+# exactement au moment ou plus personne ne le surveille.
+#
+# Toutes les autres protections de ce depot - reessais, reparation
+# automatique, surveillance externe - traitent des pannes passageres. Celle-ci
+# traite la seule extinction CERTAINE. Sans elle, SkyTrace s'arrete a date
+# fixe quoi qu'on fasse par ailleurs.
+#
+# COMMENT. La regle porte sur l'activite du depot. Ce workflow en produit :
+# il ecrit la date dans un fichier et pousse le commit. Deux passages par mois
+# laissent au plus quinze jours entre deux, soit un quart du delai - large
+# marge si un passage est saute, ce qui arrive.
+#
+# CE QUE CELA COUTE. Un commit toutes les deux semaines, vingt-six par an,
+# tous identifiables. Le fichier touche ne sert qu'a cela et le dit.
+#
+# UNE RESERVE HONNETE. Un commit pousse par `GITHUB_TOKEN` compte comme une
+# activite du depot, mais GitHub ne documente pas explicitement ce cas
+# precis. Si la desactivation survenait malgre tout, le courriel de GitHub
+# le dirait et un clic sur "Enable workflow" suffirait - et le declencheur
+# externe (`scripts/declencher_collecte.py`) resterait, lui, hors de portee
+# de cette regle.
+
+on:
+  schedule:
+    # Le 1er et le 15, decale des heures rondes ou la contention est maximale.
+    - cron: "29 4 1,15 * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: anti-inactivite
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  battre:
+    name: Maintenir le depot actif
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ecrire la date et pousser
+        # `[skip ci]` evite de consommer des minutes pour une CI qui n'a rien
+        # a verifier. Un push par `GITHUB_TOKEN` ne declenche de toute facon
+        # aucun workflow - GitHub l'interdit pour eviter les boucles - mais le
+        # marqueur rend l'intention lisible.
+        run: |
+          cat > .github/derniere-activite.txt <<TEXTE
+          Ce fichier n'a qu'un role : prouver a GitHub que le depot est actif.
+
+          Les taches planifiees d'un depot public sont desactivees apres
+          soixante jours sans activite. Le workflow Anti-inactivite reecrit
+          cette date deux fois par mois pour que ce delai ne soit jamais
+          atteint. Rien d'autre ne lit ce fichier.
+
+          Derniere ecriture : $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          TEXTE
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/derniere-activite.txt
+
+          if git diff --cached --quiet; then
+            echo "Aucun changement, rien a pousser."
+            exit 0
+          fi
+
+          git commit -m "chore: maintien de l'activite du depot [skip ci]"
+          git push

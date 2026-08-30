@@ -311,3 +311,114 @@ existe, R2 porte bien l'horodatage de depot que lit `objet.uploaded`, et le
 corps est du JSON analysable a cinq champs. La logique elle-meme est courte
 et sans dependance, mais elle sera confirmee par le premier `curl` apres
 deploiement, pas avant.
+
+
+---
+
+# Declencher la collecte depuis l'exterieur
+
+## Pourquoi ne plus dependre de l'ordonnanceur GitHub
+
+Le 26 aout 2026 a 16 h 38 UTC, les taches planifiees du compte ont cesse de
+s'executer. Ce qui a ete constate ensuite, sur deux jours :
+
+| Fait | Consequence |
+|---|---|
+| Les executions par `push` ont continue de fonctionner | Actions n'est pas restreint |
+| Un depot voisin, calendriers non modifies, est reparti seul | Ce n'est pas le compte |
+| SkyTrace : plus de 40 h sans un seul declenchement planifie | L'ordonnanceur, specifiquement |
+| Pousser un commit n'a rien change | L'activite du depot ne suffit pas |
+
+La lecon n'est pas qu'il faut mieux configurer le cron. C'est que
+**l'ordonnanceur de GitHub n'est pas un composant sur lequel fonder la
+disponibilite d'un pipeline**. Sa documentation le dit elle-meme : les taches
+planifiees s'executent « au mieux », sans garantie.
+
+Le declenchement par API n'emprunte pas ce chemin. C'est la voie du bouton
+*Run workflow*, celle qui a continue de marcher pendant toute la panne.
+
+## Le principe
+
+Un cron **externe** appelle l'API GitHub toutes les heures. La collecte cesse
+de dependre de l'ordonnanceur, exactement comme la surveillance a cesse d'en
+dependre. Le cron `schedule` reste en place : quand il fonctionne, il fait le
+travail ; quand il se tait, l'appel externe prend le relais.
+
+Les deux peuvent se declencher a la meme heure sans dommage. Le workflow
+declare `concurrency: collecte`, donc une seconde execution attend la
+premiere, et une collecte en double ne duplique rien : la table de faits est
+incrementale en `delete+insert` sur la cle (appareil, instant).
+
+## 1. Creer un jeton a portee etroite
+
+**github.com/settings/personal-access-tokens/new**
+
+| Champ | Valeur |
+|---|---|
+| Repository access | *Only select repositories* -> `SouleimanME/Skytrace` |
+| Permissions | *Actions* -> **Read and write** |
+| Expiration | la plus courte qui vous convienne |
+
+Rien d'autre. Ce jeton ne peut que lire et declencher des workflows sur ce
+seul depot : c'est le minimum necessaire, et le maximum de degats possible
+s'il fuitait reste borne a ce perimetre.
+
+## 2. Le verifier avant de le confier a un tiers
+
+```bash
+export SKYTRACE_GITHUB_TOKEN=...
+python scripts/declencher_collecte.py SouleimanME/Skytrace
+```
+
+Sous PowerShell : `$env:SKYTRACE_GITHUB_TOKEN = "..."`.
+
+Le jeton est lu dans l'environnement et **jamais passe en argument** :
+l'historique du terminal le conserverait. Il n'est jamais affiche non plus,
+ce qu'un test verifie.
+
+Le script declenche le workflow **puis verifie qu'une execution est apparue**.
+C'est une distinction qui a coute une soiree : l'API repond `204` pour dire
+qu'elle a recu la demande, pas qu'un travail a demarre. Le soir de la panne,
+un declenchement cru effectif n'avait laisse aucune trace.
+
+Chaque echec nomme sa cause plutot que d'echouer en bloc :
+
+| Code | Cause |
+|---|---|
+| `401` | jeton absent, expire ou mal copie |
+| `403` | jeton valide mais sans la permission *Actions* |
+| `404` | depot ou workflow introuvable, ou jeton sans acces a ce depot |
+
+## 3. Le programmer chez un tiers
+
+Sur **cron-job.org** (gratuit), creer une tache :
+
+| Champ | Valeur |
+|---|---|
+| URL | `https://api.github.com/repos/SouleimanME/Skytrace/actions/workflows/collect.yml/dispatches` |
+| Methode | `POST` |
+| Planification | toutes les heures |
+| Corps | `{"ref":"main"}` |
+
+En-tetes a ajouter :
+
+```
+Accept: application/vnd.github+json
+Authorization: Bearer VOTRE_JETON
+X-GitHub-Api-Version: 2022-11-28
+Content-Type: application/json
+```
+
+Activer la notification par courriel en cas d'echec. Une reponse `204` est un
+succes ; cron-job.org la traite comme telle.
+
+## Ce que cela ne couvre pas
+
+Le declencheur garantit que **la demande part**. Il ne garantit pas que
+GitHub l'honore : si les Actions du compte etaient un jour reellement
+restreintes, l'appel repondrait `403` et la collecte s'arreterait malgre
+tout. C'est precisement pour cela que le battement de coeur existe en
+parallele - il ne surveille pas la demande, il surveille le **resultat**.
+
+Les deux mecanismes se completent : l'un declenche, l'autre verifie que
+quelque chose est arrive. Aucun des deux ne suffit seul.

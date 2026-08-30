@@ -46,6 +46,15 @@ jobs:
     name: Fraicheur du lac
     runs-on: ubuntu-latest
     env:
+      HEARTBEAT_URL: ${{ secrets.SKYTRACE_HEARTBEAT_URL }}
+      # LA REPARATION DOIT COLLECTER LA MEME ZONE QUE LA COLLECTE.
+      # Sans ces deux variables, la valeur par defaut s'applique - c'est
+      # `france`, une fenetre dix fois plus etroite. Un rattrapage
+      # deposerait alors un releve partiel indiscernable des autres, et
+      # creuserait un trou artificiel dans toutes les series. L'erreur a
+      # deja ete commise a la main : elle ne doit pas etre automatisee.
+      SKYTRACE_REGION: world
+      SKYTRACE_DUCKDB_PATH: ${{ github.workspace }}/data/warehouse/skytrace.duckdb
       SKYTRACE_R2_ACCOUNT_ID: ${{ secrets.SKYTRACE_R2_ACCOUNT_ID }}
       SKYTRACE_R2_BUCKET: ${{ secrets.SKYTRACE_R2_BUCKET }}
       SKYTRACE_R2_ACCESS_KEY_ID: ${{ secrets.SKYTRACE_R2_ACCESS_KEY_ID }}
@@ -74,11 +83,51 @@ jobs:
 
       - name: Installation
         if: steps.garde.outputs.active == 'true'
-        run: pip install -e .
+        # La chaine de transformation est necessaire : cette tache ne se
+        # contente plus de constater, elle repare.
+        run: pip install -e ".[transform]"
 
       - name: Age du dernier releve
+        id: fraicheur
         if: steps.garde.outputs.active == 'true'
-        # Six heures : les ecarts mesures entre deux collectes vont de la
+        # Dix heures : les ecarts mesures entre deux collectes vont de la
         # minute a plus de trois heures, le cron GitHub n'etant pas ponctuel.
         # Un seuil serre alerterait en permanence, donc n'alerterait plus.
+        #
+        # `continue-on-error` n'est PAS une facon d'ignorer l'echec : c'est ce
+        # qui permet a l'etape suivante de le rattraper. Sans lui, la tache
+        # s'arreterait ici et se contenterait de prevenir.
+        continue-on-error: true
         run: skytrace watchdog --max-age-hours 10
+
+      - name: Reparation - collecter puisque personne ne l'a fait
+        if: steps.garde.outputs.active == 'true' && steps.fraicheur.outcome == 'failure'
+        # CE QUE CETTE ETAPE CHANGE, ET POURQUOI ELLE EXISTE.
+        #
+        # Cette tache constatait l'arret de la collecte et faisait passer le
+        # workflow au rouge. Un courriel partait, et il fallait aller cliquer.
+        # Une surveillance qui exige une intervention humaine pour une panne
+        # dont la reparation tient en une commande n'est pas de
+        # l'automatisation : c'est un rappel de corvee.
+        #
+        # Elle collecte donc elle-meme. La panne la plus frequente - le cron
+        # de collecte n'a pas ete declenche - se repare sans que personne ne
+        # soit prevenu, ce qui est le comportement attendu d'un systeme
+        # automatise.
+        #
+        # Le workflow ne passe au rouge QUE si cette reparation echoue aussi.
+        # A ce moment-la seulement, le courriel est merite : il signale
+        # quelque chose que le systeme ne sait pas resoudre seul.
+        run: |
+          echo "Lac perime : collecte de rattrapage."
+          skytrace pipeline
+          skytrace publier-sante
+
+      - name: Battement de coeur apres reparation
+        if: >-
+          steps.garde.outputs.active == 'true'
+          && steps.fraicheur.outcome == 'failure'
+          && env.HEARTBEAT_URL != ''
+        # La reparation a produit une collecte : le battement doit partir,
+        # sinon le moniteur externe alerterait pour une panne deja resolue.
+        run: curl --fail --silent --show-error --max-time 20 --retry 3 "$HEARTBEAT_URL"

@@ -477,6 +477,8 @@ développement du mécanisme de déploiement fait partie du métier.
 **Marche à suivre complète : [`docs/deploiement.md`](docs/deploiement.md).**
 **Surveillance qui survit à une panne de GitHub Actions :
 [`docs/surveillance-externe.md`](docs/surveillance-externe.md).**
+**Ce qui fait tourner le projet sans intervention :
+[`docs/autonomie.md`](docs/autonomie.md).**
 
 ## Structure du dépôt
 

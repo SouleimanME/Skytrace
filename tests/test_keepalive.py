@@ -131,3 +131,59 @@ def test_le_chemin_de_sante_vise_l_application_et_non_la_coquille():
     # Regression : sonder la racine renvoyait du HTML meme application en
     # marche, ce qui faisait conclure a un echec apres un reveil reussi.
     assert keepalive.HEALTH_PATH.startswith("/~/+/")
+
+
+class TestResilience:
+    """Une alerte fausse coute plus cher qu'une alerte manquante.
+
+    Le 30 aout 2026, le workflow de maintien en eveil a echoue et envoye un
+    courriel d'alarme alors que l'application repondait parfaitement. Piloter
+    un navigateur sans fil est capricieux : un clic peut manquer sa cible,
+    une page peut mettre trop longtemps. Ces aleas ne disent rien de la sante
+    du service, et faire crier le workflow dessus apprend a ignorer les
+    alertes suivantes.
+    """
+
+    def test_un_alea_de_pilotage_ne_fait_pas_echouer(self, monkeypatch, capsys):
+        """LE cas qui produisait la fausse alerte."""
+        monkeypatch.setattr(keepalive, "is_awake", lambda *_a, **_k: True)
+        monkeypatch.setattr(keepalive, "PAUSE_ENTRE_TENTATIVES_S", 0)
+
+        def pilotage_capricieux(*_a, **_k):
+            raise keepalive.PlaywrightTimeout("Timeout 60000ms exceeded")
+
+        monkeypatch.setattr(keepalive, "visit", pilotage_capricieux)
+
+        code = keepalive.main(["prog", "https://exemple.streamlit.app"])
+
+        assert code == 0, "l'application repond : le workflow ne doit pas echouer"
+        assert "malgre l'echec du pilotage" in capsys.readouterr().out
+
+    def test_une_application_muette_fait_bien_echouer(self, monkeypatch, capsys):
+        """La resilience ne doit pas devenir de la complaisance."""
+        monkeypatch.setattr(keepalive, "is_awake", lambda *_a, **_k: False)
+        monkeypatch.setattr(keepalive, "visit", lambda *_a, **_k: False)
+        monkeypatch.setattr(keepalive, "PAUSE_ENTRE_TENTATIVES_S", 0)
+
+        assert keepalive.main(["prog", "https://exemple.streamlit.app"]) == 1
+        assert "ne repond pas" in capsys.readouterr().err
+
+    def test_une_reussite_au_second_essai_suffit(self, monkeypatch):
+        """Un demarrage de conteneur plus lent que d'habitude n'est pas une panne."""
+        monkeypatch.setattr(keepalive, "is_awake", lambda *_a, **_k: False)
+        monkeypatch.setattr(keepalive, "PAUSE_ENTRE_TENTATIVES_S", 0)
+        essais = iter([False, True])
+        monkeypatch.setattr(keepalive, "visit", lambda *_a, **_k: next(essais))
+
+        assert keepalive.main(["prog", "https://exemple.streamlit.app"]) == 0
+
+    def test_le_nombre_de_tentatives_est_borne(self, monkeypatch):
+        """Sans borne, le workflow tournerait jusqu'a son propre delai maximal."""
+        monkeypatch.setattr(keepalive, "is_awake", lambda *_a, **_k: False)
+        monkeypatch.setattr(keepalive, "PAUSE_ENTRE_TENTATIVES_S", 0)
+        appels = []
+        monkeypatch.setattr(keepalive, "visit", lambda *a, **k: appels.append(1) or False)
+
+        keepalive.main(["prog", "https://exemple.streamlit.app"])
+
+        assert len(appels) == keepalive.TENTATIVES

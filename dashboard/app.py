@@ -833,8 +833,15 @@ def style_fig(fig, height: int | None = None):
 # Accès aux données
 # ---------------------------------------------------------------------------
 @st.cache_data(ttl=90, show_spinner=False)
-def load(sql: str) -> pd.DataFrame:
+def load(sql: str, params: tuple = ()) -> pd.DataFrame:
     """Exécute une requête sur l'entrepôt en lecture seule.
+
+    `params` lie des valeurs aux marqueurs `?` de la requête. TOUTE valeur
+    qui ne vient pas du code source doit passer par là plutôt que par une
+    f-string : une apostrophe dans un libellé suffirait à casser la requête,
+    et une valeur choisie ailleurs pourrait en changer le sens. Les
+    paramètres sont un tuple pour rester hachables, donc compatibles avec le
+    cache.
 
     Lecture seule volontairement : DuckDB n'autorise qu'un seul écrivain,
     et le tableau de bord ne doit jamais bloquer un run dbt en cours.
@@ -849,7 +856,7 @@ def load(sql: str) -> pd.DataFrame:
     """
     with duckdb.connect(str(SETTINGS.resolved_duckdb_path), read_only=True) as connection:
         connection.execute(f"SET TimeZone = '{WAREHOUSE_TIMEZONE}'")
-        return connection.execute(sql).df()
+        return connection.execute(sql, list(params)).df()
 
 
 def warehouse_is_ready() -> tuple[bool, str]:
@@ -1063,7 +1070,10 @@ def display_region() -> str:
         )
         if not df.empty and df.iloc[0]["ingestion_region"]:
             return str(df.iloc[0]["ingestion_region"])
-    except Exception:  # noqa: BLE001 - repli silencieux
+    except Exception:  # noqa: BLE001, S110 - repli volontaire, voir plus bas
+        # L'entrepot peut ne pas etre encore lisible au premier rendu. La
+        # zone affichee dans l'en-tete n'est pas une information critique :
+        # on retombe sur la configuration plutot que d'empecher la page.
         pass
     return SETTINGS.region
 
@@ -1281,12 +1291,13 @@ def aircraft_history(icao24: str) -> pd.DataFrame:
     quelques dizaines de lignes.
     """
     return load(
-        f"""
+        """
         select snapshot_at, barometric_altitude_ft, ground_speed_kt, flight_phase
         from marts.fct_aircraft_positions
-        where aircraft_icao24 = '{icao24}'
+        where aircraft_icao24 = ?
         order by snapshot_at
-        """  # noqa: S608 - l'adresse OACI est validee par l'appelant
+        """,
+        (icao24,),
     )
 
 
@@ -1619,7 +1630,13 @@ def render_fleet_age() -> None:
         select
             airline_name                            as compagnie,
             count(*)                                as appareils,
-            round(2026 - avg(built_year), 1)        as age_moyen
+            -- L'annee courante vient de la BASE, pas d'une constante.
+            -- Elle etait ecrite en dur (2026) : au 1er janvier 2027, tous
+            -- les ages affiches auraient ete sous-estimes d'un an, sans
+            -- rien casser et sans que personne ne le voie. Un tableau de
+            -- bord cense tourner des annees ne peut pas contenir l'annee
+            -- de sa propre ecriture.
+            round(extract(year from current_date) - avg(built_year), 1) as age_moyen
         from marts.dim_aircraft
         where airline_name is not null and built_year is not null
         group by 1
@@ -2213,8 +2230,9 @@ def render_fleet() -> None:
             here = load(
                 "select airline_name, sum(distinct_aircraft) as aeronefs "
                 "from marts.fct_airline_airport_activity "
-                f"where airport_iata_code = '{choice}' and airline_name is not null "
-                "group by 1 order by 2 desc limit 10"
+                "where airport_iata_code = ? and airline_name is not null "
+                "group by 1 order by 2 desc limit 10",
+                (choice,),
             )
             bar = px.bar(
                 here.sort_values("aeronefs"),

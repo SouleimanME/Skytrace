@@ -14,6 +14,7 @@ de la meme maniere depuis un terminal, depuis Dagster ou depuis la CI.
     skytrace dashboard           # lance le tableau de bord Streamlit
     skytrace watchdog            # echoue si la collecte s'est arretee
     skytrace publier-sante       # publie l'etat du pipeline en JSON sur le lac
+    skytrace backfill            # comble les trous de la serie (compte OpenSky requis)
     skytrace model train         # entraine et enregistre le classifieur
     skytrace model info          # decrit la version en service
     skytrace model predict <adresses OACI>
@@ -140,6 +141,38 @@ def cmd_watchdog(args: argparse.Namespace) -> int:
         return 1
 
     print(f"Collecte active : dernier releve il y a {heures:.1f} h.")
+    return 0
+
+
+def cmd_backfill(args: argparse.Namespace) -> int:
+    """Comble les trous de la serie en rejouant l'historique OpenSky.
+
+    NE FAIT RIEN SANS IDENTIFIANTS, et sort en 0 dans ce cas. C'est
+    volontaire : cette commande tourne dans une tache planifiee, et faire
+    echouer un workflow parce qu'une capacite optionnelle n'est pas
+    configuree enverrait une alerte qui ne demande aucune action.
+    """
+    from skytrace.ingestion.states import backfill_gaps
+
+    resultat = backfill_gaps(
+        step_hours=args.step_hours,
+        max_snapshots=args.max_snapshots,
+        min_gap_hours=args.min_gap_hours,
+    )
+
+    if resultat.skipped_reason:
+        logger.info("Rattrapage inactif : %s", resultat.skipped_reason)
+        return 0
+
+    if not resultat.gaps_found:
+        print("Aucun trou a combler.")
+        return 0
+
+    print(
+        f"{resultat.gaps_found} trou(s) reperes, "
+        f"{resultat.snapshots_written} releve(s) rattrape(s), "
+        f"{resultat.hours_recovered:.0f} h recuperees."
+    )
     return 0
 
 
@@ -401,7 +434,7 @@ def cmd_info(_: argparse.Namespace) -> int:
     settings = get_settings()
     ledger = CreditLedger(
         settings.resolved_data_dir / ".credit_ledger.json",
-        settings.daily_credit_budget,
+        settings.resolved_credit_budget,
     )
 
     print("=== Configuration ===")
@@ -412,7 +445,7 @@ def cmd_info(_: argparse.Namespace) -> int:
 
     print("\n=== Quotas OpenSky (aujourd'hui) ===")
     print(
-        f"  {ledger.spent_today()} / {settings.daily_credit_budget} credits consommes"
+        f"  {ledger.spent_today()} / {settings.resolved_credit_budget} credits consommes"
         f"  ({ledger.remaining_today()} restants)"
     )
 
@@ -599,6 +632,36 @@ def build_parser() -> argparse.ArgumentParser:
         help="Publie l'etat du pipeline en JSON a la racine du lac.",
     )
     sante.set_defaults(handler=cmd_publier_sante)
+
+    rattrapage = subparsers.add_parser(
+        "backfill",
+        help="Comble les trous de la serie en rejouant l'historique OpenSky.",
+    )
+    rattrapage.add_argument(
+        "--min-gap-hours",
+        type=float,
+        default=3.0,
+        help=(
+            "Taille minimale d'un trou a combler, en heures. En deca, "
+            "l'irregularite du cron suffit a l'expliquer (defaut : 3)."
+        ),
+    )
+    rattrapage.add_argument(
+        "--step-hours",
+        type=float,
+        default=1.0,
+        help="Pas de rattrapage, en heures (defaut : 1, la cadence nominale).",
+    )
+    rattrapage.add_argument(
+        "--max-snapshots",
+        type=int,
+        default=24,
+        help=(
+            "Plafond de releves rattrapes par execution. Borne la depense en "
+            "credits : on rattrape par tranches (defaut : 24)."
+        ),
+    )
+    rattrapage.set_defaults(handler=cmd_backfill)
 
     modele = subparsers.add_parser(
         "model",

@@ -312,7 +312,11 @@ def main() -> int:
 
     settings = get_settings()
     settings.ensure_directories()
-    rng = random.Random(SEED)
+    # Tirage reproductible pour un jeu de DEMONSTRATION : la graine fixe est
+    # le but recherche, aucune valeur secrete n'en depend.
+    rng = random.Random(  # noqa: S311
+        SEED
+    )
 
     airports = write_airports(settings.airports_dir / "airports.parquet")
     print(f"Referentiel : {airports} aeroports")

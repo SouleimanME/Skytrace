@@ -57,6 +57,31 @@ BRANCHE = "main"
 API = "https://api.github.com"
 TIMEOUT = 30.0
 
+#: Version de l'API REST epinglee dans l'en-tete `X-GitHub-Api-Version`.
+#:
+#: ELLE A UNE DATE DE PEREMPTION, ET GITHUB LA DIT LUI-MEME. Les en-tetes de
+#: reponse mesures le 31 aout 2026 :
+#:
+#:     Deprecation: Tue, 10 Mar 2026 00:00:00 GMT
+#:     Sunset:      Fri, 10 Mar 2028 00:00:00 GMT
+#:
+#: Autrement dit : depreciee depuis mars 2026, et arretee en mars 2028. Ce
+#: jour-la, le declenchement externe cessera de fonctionner - une extinction
+#: programmee de plus, du meme genre que la regle des soixante jours
+#: d'inactivite.
+#:
+#: POURQUOI L'EPINGLER QUAND MEME. Sans cet en-tete, GitHub applique la
+#: version par defaut, qui suit ses evolutions : le code ne casse jamais a
+#: date fixe, mais il peut changer de comportement sans prevenir. Epingler
+#: rend la panne PREVISIBLE et datee plutot que surprenante, et l'alerte du
+#: cron externe la signalera le jour venu.
+#:
+#: A FAIRE AVANT MARS 2028 : relever la version courante sur
+#: https://docs.github.com/en/rest/about-the-rest-api/api-versions et la
+#: reporter ici ainsi que dans l'en-tete du cron externe.
+API_VERSION = "2022-11-28"
+API_VERSION_SUNSET = "2028-03-10"
+
 #: Combien de temps attendre l'apparition de l'execution. GitHub accuse
 #: reception immediatement mais met quelques secondes a creer le run.
 ATTENTE_MAX_SECONDES = 45
@@ -71,7 +96,7 @@ def _requete(url: str, jeton: str, *, donnees: bytes | None = None) -> tuple[int
         headers={
             "Accept": "application/vnd.github+json",
             "Authorization": f"Bearer {jeton}",
-            "X-GitHub-Api-Version": "2022-11-28",
+            "X-GitHub-Api-Version": API_VERSION,
             "User-Agent": "skytrace-declencheur",
         },
         method="POST" if donnees is not None else "GET",

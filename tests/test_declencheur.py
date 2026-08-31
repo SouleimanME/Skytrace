@@ -113,3 +113,22 @@ class TestVerificationReelle:
 def test_la_branche_visee_est_la_branche_par_defaut():
     """Un workflow ne se declenche que depuis la branche par defaut."""
     assert dc.BRANCHE == "main"
+
+
+def test_la_peremption_de_l_api_est_documentee():
+    """GitHub annonce lui-meme la fin de vie de la version epinglee.
+
+    Mesure du 31 aout 2026, en-tetes de reponse :
+
+        Deprecation: Tue, 10 Mar 2026
+        Sunset:      Fri, 10 Mar 2028
+
+    Le declencheur externe cessera donc de fonctionner en mars 2028 si
+    personne ne releve la version. Ce test ne peut pas l'empecher, mais il
+    garantit que la date reste ecrite noir sur blanc a cote du code qui en
+    depend, plutot que perdue dans un historique de conversation.
+    """
+    assert dc.API_VERSION == "2022-11-28"
+    assert dc.API_VERSION_SUNSET == "2028-03-10"
+    source = Path(dc.__file__).read_text(encoding="utf-8")
+    assert "Sunset" in source, "la date de fin de vie doit rester visible dans le code"

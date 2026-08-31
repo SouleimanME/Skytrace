@@ -5,7 +5,13 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from skytrace.config import BOUNDING_BOXES, BoundingBox, Settings
+from skytrace.config import (
+    BOUNDING_BOXES,
+    CREDITS_ANONYME,
+    CREDITS_AUTHENTIFIE,
+    BoundingBox,
+    Settings,
+)
 
 
 class TestBoundingBox:
@@ -83,3 +89,47 @@ class TestSettings:
         settings.ensure_directories()
         assert settings.states_dir.is_dir()
         assert settings.airports_dir.is_dir()
+
+
+class TestBudgetDeCredits:
+    """Le garde-fou de credits doit suivre ce que le compte permet.
+
+    Il etait ecrit en dur a 400 - la limite ANONYME. Poser des identifiants
+    OpenSky n'aurait donc rien change : notre propre compteur aurait refuse
+    les appels bien avant qu'OpenSky ne les refuse, et le gain attendu du
+    compte (dix fois plus de credits, plus l'historique) serait reste
+    invisible. Un garde-fou cale sur la mauvaise limite bride en silence.
+    """
+
+    def test_sans_identifiants_le_budget_est_anonyme(self, monkeypatch):
+        monkeypatch.delenv("OPENSKY_CLIENT_ID", raising=False)
+        monkeypatch.delenv("OPENSKY_CLIENT_SECRET", raising=False)
+        monkeypatch.delenv("SKYTRACE_DAILY_CREDIT_BUDGET", raising=False)
+        reglages = Settings()
+        assert reglages.is_anonymous
+        assert reglages.resolved_credit_budget == CREDITS_ANONYME
+
+    def test_avec_identifiants_le_budget_decuple(self, monkeypatch):
+        monkeypatch.setenv("OPENSKY_CLIENT_ID", "un-identifiant")
+        monkeypatch.setenv("OPENSKY_CLIENT_SECRET", "un-secret")
+        monkeypatch.delenv("SKYTRACE_DAILY_CREDIT_BUDGET", raising=False)
+        reglages = Settings()
+        assert not reglages.is_anonymous
+        assert reglages.resolved_credit_budget == CREDITS_AUTHENTIFIE
+        assert CREDITS_AUTHENTIFIE == 10 * CREDITS_ANONYME
+
+    def test_une_valeur_explicite_l_emporte(self, monkeypatch):
+        """Sert a se brider volontairement, jamais a depasser ce que le compte permet."""
+        monkeypatch.setenv("OPENSKY_CLIENT_ID", "un-identifiant")
+        monkeypatch.setenv("OPENSKY_CLIENT_SECRET", "un-secret")
+        monkeypatch.setenv("SKYTRACE_DAILY_CREDIT_BUDGET", "1000")
+        assert Settings().resolved_credit_budget == 1000
+
+    def test_un_identifiant_seul_ne_suffit_pas(self, monkeypatch):
+        """Une moitie d'identifiants n'authentifie rien : on reste au budget anonyme."""
+        monkeypatch.setenv("OPENSKY_CLIENT_ID", "un-identifiant")
+        monkeypatch.delenv("OPENSKY_CLIENT_SECRET", raising=False)
+        monkeypatch.delenv("SKYTRACE_DAILY_CREDIT_BUDGET", raising=False)
+        reglages = Settings()
+        assert reglages.is_anonymous
+        assert reglages.resolved_credit_budget == CREDITS_ANONYME

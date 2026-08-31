@@ -18,8 +18,9 @@ from skytrace.logging_conf import get_logger
 
 logger = get_logger(__name__)
 
+# C'est l'ADRESSE du serveur de jetons, pas un jeton.
 TOKEN_URL = (
-    "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token"
+    "https://auth.opensky-network.org/auth/realms/opensky-network/protocol/openid-connect/token"  # noqa: S105
 )
 
 #: Marge de securite : on renouvelle le jeton avant son expiration reelle

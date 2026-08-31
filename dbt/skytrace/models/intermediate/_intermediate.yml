@@ -28,7 +28,30 @@ models:
     columns:
       - name: aircraft_icao24
         description: Appareil rattache.
+        data_tests:
+          - not_null
       - name: airport_id
         description: Aeroport le plus proche dans le rayon (cle vers dim_airport).
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_airport')
+                field: airport_id
       - name: distance_km
-        description: Distance orthodromique appareil / aeroport, en kilometres.
+        description: >
+          Distance orthodromique appareil / aeroport, en kilometres.
+
+          LE TEST DE PLAGE VERIFIE LA LOGIQUE GEOSPATIALE, pas la donnee. Le
+          modele cherche l'aeroport le plus proche par blocking sur une grille
+          d'un degre, puis calcule une haversine sur les seuls candidats
+          voisins. Une erreur dans le decoupage de la grille - un voisin
+          oublie, un decalage de signe - produirait des rattachements au-dela
+          du rayon retenu sans rien casser d'autre. Cette borne est la seule
+          chose qui le dirait.
+        data_tests:
+          - not_null
+          - accepted_range:
+              arguments:
+                min_value: 0
+                max_value: "{{ var('airport_activity_radius_km') }}"

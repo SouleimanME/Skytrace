@@ -1,4 +1,4 @@
-﻿# Architecture
+# Architecture
 
 Ce document décrit le fonctionnement interne du pipeline : ce qui circule,
 sous quelle forme, et pourquoi.

@@ -73,6 +73,11 @@ BOUNDING_BOXES: dict[str, BoundingBox] = {
 }
 
 
+#: Budgets quotidiens OpenSky, en credits. Un appel mondial en coute 4.
+CREDITS_ANONYME = 400
+CREDITS_AUTHENTIFIE = 4000
+
+
 class Settings(BaseSettings):
     """Parametres du pipeline, resolus depuis l'environnement."""
 
@@ -88,7 +93,10 @@ class Settings(BaseSettings):
     opensky_client_secret: str | None = Field(default=None, alias="OPENSKY_CLIENT_SECRET")
 
     region: str = Field(default="france", alias="SKYTRACE_REGION")
-    daily_credit_budget: int = Field(default=400, alias="SKYTRACE_DAILY_CREDIT_BUDGET")
+    #: Budget quotidien EXPLICITE. Laisse a None, il suit l'authentification
+    #: (voir `resolved_credit_budget`) : le figer a 400 plafonnait un compte
+    #: authentifie a la limite anonyme, soit un dixieme de ce qu'il a droit.
+    daily_credit_budget: int | None = Field(default=None, alias="SKYTRACE_DAILY_CREDIT_BUDGET")
     # Retention du lac : les snapshots plus vieux sont purges pour borner le
     # stockage (rester sous les 10 Go gratuits de R2). 180 j = ~6 mois
     # d'historique, largement sous le palier gratuit meme en zone monde.
@@ -205,6 +213,25 @@ class Settings(BaseSettings):
     def is_anonymous(self) -> bool:
         """Vrai si aucune identification OAuth2 n'est disponible."""
         return not (self.opensky_client_id and self.opensky_client_secret)
+
+    @property
+    def resolved_credit_budget(self) -> int:
+        """Budget quotidien effectif, selon qu'on soit authentifie ou non.
+
+        OpenSky accorde dix fois plus de credits a un compte identifie. Le
+        budget etait ecrit en dur a 400 - la limite ANONYME - donc poser des
+        identifiants n'aurait rien change : notre propre compteur aurait
+        refuse les appels bien avant qu'OpenSky ne les refuse. Un garde-fou
+        cale sur la mauvaise limite est pire qu'absent, puisqu'il bride
+        silencieusement.
+
+        Une valeur explicite dans l'environnement l'emporte toujours : elle
+        sert a se brider volontairement, jamais a se debrider au-dela de ce
+        que le compte permet.
+        """
+        if self.daily_credit_budget is not None:
+            return self.daily_credit_budget
+        return CREDITS_ANONYME if self.is_anonymous else CREDITS_AUTHENTIFIE
 
     def ensure_directories(self) -> None:
         for path in (

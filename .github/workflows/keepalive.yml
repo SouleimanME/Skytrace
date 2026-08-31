@@ -36,6 +36,12 @@ on:
     - cron: "23 3,11,19 * * *"
   workflow_dispatch: {}
 
+permissions:
+  # Le jeton du workflow ne sert qu'a recuperer le code. Sans cette
+  # declaration il herite du reglage du depot, qui peut permettre l'ecriture :
+  # une dependance compromise pourrait alors pousser un commit.
+  contents: read
+
 concurrency:
   group: maintien-en-eveil
   cancel-in-progress: true

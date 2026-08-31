@@ -122,7 +122,9 @@ def find_wake_button(page: Page):
                 return bouton.first
         except PlaywrightTimeout:
             continue
-        except Exception:  # noqa: BLE001 - cadre detache pendant le parcours
+        except Exception:  # noqa: BLE001, S112 - cadre detache pendant le parcours
+            # Playwright invalide un cadre qui disparait en cours de
+            # parcours. On passe au suivant : ce n'est pas une panne.
             continue
     return None
 

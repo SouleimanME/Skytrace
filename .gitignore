@@ -17,11 +17,15 @@ htmlcov/
 # `data/raw/` ignorerait le dossier entier et git ne descendrait meme pas
 # dedans, rendant la negation `!.gitkeep` inoperante.
 #
-# Exception assumee : le workflow .github/workflows/collect.yml force
-# l'ajout des Parquet (`git add -f data/raw/...`) pour publier le lac sur le
-# deploiement public. L'ignore reste en place pour garder le depot propre
-# en developpement local ; seul le collecteur cloud passe outre, et c'est
-# precisement son role.
+# CE QUI EST DEJA VERSIONNE, ET POURQUOI CE N'EST PLUS AUTOMATIQUE. Le depot
+# suit 49 Parquet dans `data/raw/`, du 19 au 22 aout 2026. Ils y ont ete
+# pousses par le collecteur de l'epoque, qui publiait le lac dans git faute
+# de stockage objet. Depuis le passage a R2, plus aucun workflow n'ecrit dans
+# git : ces fichiers sont un echantillon FIGE, conserve a dessein pour qu'un
+# clone fonctionne sans identifiants R2. Ils ne grossissent plus.
+#
+# L'ignore ci-dessous empeche donc d'en ajouter de nouveaux par megarde ;
+# il ne retire pas ceux qui sont deja suivis.
 data/raw/*
 data/warehouse/*
 # Artefacts de modeles : ils se reconstruisent par `skytrace model train`, et

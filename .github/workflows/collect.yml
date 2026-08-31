@@ -43,6 +43,12 @@ on:
     - cron: "17 * * * *"
   workflow_dispatch: {} # declenchement manuel depuis l'onglet Actions
 
+permissions:
+  # Le jeton du workflow ne sert qu'a recuperer le code. Sans cette
+  # declaration il herite du reglage du depot, qui peut permettre l'ecriture :
+  # une dependance compromise pourrait alors pousser un commit.
+  contents: read
+
 concurrency:
   group: collecte
   cancel-in-progress: false
@@ -55,6 +61,12 @@ jobs:
       # Nord, plus clairsemee ailleurs). 4 credits/appel, 48/jour = 192/400.
       # Le stockage est borne par la retention (SKYTRACE_RETENTION_DAYS).
       SKYTRACE_REGION: world
+      # Identifiants OpenSky, FACULTATIFS. Sans eux le client reste anonyme :
+      # la collecte courante fonctionne, mais l'historique est refuse et le
+      # budget quotidien est dix fois plus bas. Les definir active le
+      # rattrapage des trous sans autre changement.
+      OPENSKY_CLIENT_ID: ${{ secrets.OPENSKY_CLIENT_ID }}
+      OPENSKY_CLIENT_SECRET: ${{ secrets.OPENSKY_CLIENT_SECRET }}
       # Entrepot DuckDB local au runner (ephemere) : sert au garde-fou dbt.
       SKYTRACE_DUCKDB_PATH: ${{ github.workspace }}/data/warehouse/skytrace.duckdb
       # Lac brut sur R2 (identifiants en secrets).
@@ -115,7 +127,9 @@ jobs:
             fi
             echo "::endgroup::"
             echo "Tentative $tentative en echec."
-            [ "$tentative" -lt 3 ] && sleep 60
+            if [ "$tentative" -lt 3 ]; then
+              sleep 60
+            fi
           done
           echo "::error::Trois tentatives de collecte ont echoue."
           exit 1

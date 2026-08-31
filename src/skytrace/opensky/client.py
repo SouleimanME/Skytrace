@@ -143,7 +143,7 @@ class OpenSkyClient:
         )
         self._ledger = ledger or CreditLedger(
             settings.resolved_data_dir / ".credit_ledger.json",
-            settings.daily_credit_budget,
+            settings.resolved_credit_budget,
         )
 
     # -- cycle de vie ------------------------------------------------------
@@ -167,11 +167,22 @@ class OpenSkyClient:
         bbox: BoundingBox | None = None,
         *,
         extended: bool = True,
+        at: int | None = None,
     ) -> StatesSnapshot:
-        """Recupere l'etat courant de tous les avions de la fenetre.
+        """Recupere l'etat des avions de la fenetre, maintenant ou dans le passe.
 
         `extended=True` ajoute la categorie d'aeronef (gros porteur, planeur,
         helicoptere...) sans surcout en credits.
+
+        `at` est un instant Unix passe. Il sert au RATTRAPAGE DES TROUS : quand
+        l'ordonnanceur se tait pendant deux jours, la serie garde un vide que
+        rien ne comblait, et les positions ADS-B de ces heures-la etaient
+        perdues pour toujours.
+
+        Attention : ce parametre exige un compte OpenSky. Sans identifiants,
+        l'API repond `403 Authenticate to get historical data`. L'appelant doit
+        donc verifier `anonymous` avant de s'en servir, et le message d'erreur
+        doit dire cela plutot que "acces refuse".
         """
         bbox = bbox or self._settings.bbox
         cost = bbox.credit_cost
@@ -180,6 +191,8 @@ class OpenSkyClient:
         params: dict[str, Any] = {"extended": 1 if extended else 0}
         if bbox.name != "world":
             params.update(bbox.as_params())
+        if at is not None:
+            params["time"] = int(at)
 
         payload = self._get_json("/states/all", params)
 
@@ -188,12 +201,13 @@ class OpenSkyClient:
         snapshot_ts = int(payload.get("time") or datetime.now(UTC).timestamp())
 
         logger.info(
-            "Snapshot %s : %d aeronefs | %d credits (cumul du jour : %d/%d)",
+            "Snapshot %s%s : %d aeronefs | %d credits (cumul du jour : %d/%d)",
             bbox.name,
+            "" if at is None else f" a {datetime.fromtimestamp(at, tz=UTC):%Y-%m-%d %H:%M} UTC",
             len(vectors),
             cost,
             total,
-            self._settings.daily_credit_budget,
+            self._settings.resolved_credit_budget,
         )
         return StatesSnapshot(
             snapshot_ts=snapshot_ts,
@@ -201,6 +215,15 @@ class OpenSkyClient:
             vectors=vectors,
             credits_spent=cost,
         )
+
+    @property
+    def anonymous(self) -> bool:
+        """Vrai si aucun identifiant OpenSky n'est configure.
+
+        Determine ce que le client peut faire : sans compte, l'historique est
+        refuse et le budget quotidien est dix fois plus bas.
+        """
+        return self._auth.anonymous
 
     # -- interne -----------------------------------------------------------
     def _get_json(self, path: str, params: dict[str, Any]) -> dict[str, Any]:

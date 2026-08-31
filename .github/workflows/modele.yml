@@ -1,0 +1,110 @@
+name: Reentrainement du modele
+
+# POURQUOI CE WORKFLOW EXISTE.
+#
+# Le classifieur etait entraine et applique A LA MAIN. Consequence mesuree
+# quatre jours apres le dernier passage : 18 581 appareils sur 93 652, soit
+# 19,8 %, n'avaient aucune prediction. La collecte, elle, tournait seule.
+#
+# Le pipeline grandissait donc pendant que la moitie ML se figeait, et
+# l'ecart se creusait d'environ 4 600 appareils par jour sans que rien ne le
+# signale. Un tableau de bord qui annonce des "trous combles" alors que le
+# nombre de trous augmente dit le contraire de la verite.
+#
+# CE QU'IL FAIT, ET DANS CET ORDRE. Le modele apprend depuis les marts, et
+# les predictions sont relues par les marts : la dependance est circulaire
+# sur un cycle, jamais sur une execution.
+#
+#   1. `dbt build`   - reconstruit les marts depuis le lac
+#   2. `model train` - apprend sur ces marts, enregistre une version datee
+#   3. `model score` - classe TOUS les appareils, ecrit dans le lac
+#   4. `dbt build`   - le mart de predictions relit le fichier fraichement
+#                      ecrit ; sans cette seconde passe, le scoring resterait
+#                      invisible jusqu'a la collecte suivante
+#
+# POURQUOI UNE FOIS PAR SEMAINE. Le modele apprend sur des mois de trafic :
+# un jour de plus ne change pas ce qu'il sait. Mais la POPULATION, elle,
+# grandit tous les jours, et ce sont les appareils neufs qui manquent de
+# prediction. Une semaine borne l'ecart a environ 30 000 appareils dans le
+# pire des cas, pour cinq minutes de calcul hebdomadaires.
+#
+# L'artefact du modele n'est PAS versionne : il se reconstruit ici a chaque
+# fois. C'est voulu - un binaire de plusieurs mega-octets par reentrainement
+# ferait enfler le depot, et la fiche du modele suffit a le decrire.
+
+on:
+  schedule:
+    # Le lundi, decale des heures rondes ou la contention est maximale.
+    - cron: "51 3 * * 1"
+  workflow_dispatch: {}
+
+concurrency:
+  # Jamais en meme temps que la collecte : les deux ecrivent dans l'entrepot,
+  # et DuckDB n'autorise qu'un seul ecrivain.
+  group: collecte
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  entrainer:
+    name: Entrainer et appliquer le classifieur
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SKYTRACE_R2_ACCOUNT_ID: ${{ secrets.SKYTRACE_R2_ACCOUNT_ID }}
+      SKYTRACE_R2_BUCKET: ${{ secrets.SKYTRACE_R2_BUCKET }}
+      SKYTRACE_R2_ACCESS_KEY_ID: ${{ secrets.SKYTRACE_R2_ACCESS_KEY_ID }}
+      SKYTRACE_R2_SECRET_ACCESS_KEY: ${{ secrets.SKYTRACE_R2_SECRET_ACCESS_KEY }}
+      SKYTRACE_REGION: world
+      SKYTRACE_DUCKDB_PATH: ${{ github.workspace }}/data/warehouse/skytrace.duckdb
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Secrets R2 presents ?
+        id: garde
+        # Sur un fork, les secrets n'existent pas : on s'arrete proprement
+        # plutot que d'echouer et d'alerter pour rien.
+        run: |
+          if [ -z "${SKYTRACE_R2_BUCKET}" ]; then
+            echo "Secrets R2 absents : rien a faire."
+            echo "active=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "active=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-python@v5
+        if: steps.garde.outputs.active == 'true'
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Installation
+        if: steps.garde.outputs.active == 'true'
+        # L'extra `ml` porte scikit-learn, absent des runners de collecte :
+        # ni le collecteur ni le tableau de bord n'en ont besoin.
+        run: pip install -e ".[transform,ml]"
+
+      - name: Reconstruction des marts
+        if: steps.garde.outputs.active == 'true'
+        run: skytrace dbt build
+
+      - name: Entrainement
+        if: steps.garde.outputs.active == 'true'
+        run: skytrace model train
+
+      - name: Scoring de toute la flotte
+        if: steps.garde.outputs.active == 'true'
+        run: skytrace model score
+
+      - name: Republication des marts de prediction
+        if: steps.garde.outputs.active == 'true'
+        # Le mart relit le fichier que l'etape precedente vient d'ecrire.
+        # Sans cette passe, le scoring resterait invisible.
+        run: skytrace dbt build --select fct_aircraft_predictions
+
+      - name: Publication de l'etat du pipeline
+        if: steps.garde.outputs.active == 'true'
+        run: skytrace publier-sante

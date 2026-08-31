@@ -479,6 +479,8 @@ développement du mécanisme de déploiement fait partie du métier.
 [`docs/surveillance-externe.md`](docs/surveillance-externe.md).**
 **Ce qui fait tourner le projet sans intervention :
 [`docs/autonomie.md`](docs/autonomie.md).**
+**Les trois reglages facultatifs qui ne peuvent venir que de vous :
+[`docs/mise-en-service.md`](docs/mise-en-service.md).**
 
 ## Structure du dépôt
 

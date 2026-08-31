@@ -56,6 +56,10 @@ dev = [
     "pytest-cov>=5.0",
     "respx>=0.21",
     "ruff>=0.5",
+    # Audit des vulnerabilites connues des dependances. Dans le `dev` plutot
+    # que dans les extras d'execution : c'est un outil de controle, il n'a
+    # rien a faire dans un runner de collecte.
+    "pip-audit>=2.7",
 ]
 
 [project.scripts]
@@ -70,8 +74,26 @@ target-version = "py311"
 src = ["src", "tests"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM", "N"]
+# `S` = regles de securite (bandit). Ajoutees apres un audit qui a trouve
+# trois injections SQL par interpolation de chaine, dont une alimentee
+# directement par la ligne de commande. Un audit ponctuel ne protege que le
+# jour ou il est fait ; la regle, elle, protege chaque commit.
+select = ["E", "F", "I", "UP", "B", "SIM", "N", "S"]
 ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Un test EST une suite d'assertions : `assert` y est l'outil, pas un risque.
+# Les valeurs factices y sont voulues, et le sous-processus lance est le
+# notre.
+# `exec` sert a charger une fonction du tableau de bord sans demarrer
+# Streamlit : c'est le moyen de tester l'isolation des sections.
+"tests/**" = ["S101", "S102", "S105", "S106", "S603", "S607"]
+# Le tableau de bord relance dbt sur lui-meme : le binaire est `sys.executable`
+# et les arguments sont construits ici, jamais recus.
+"dashboard/app.py" = ["S603"]
+"scripts/**" = ["S603"]
+"src/skytrace/cli.py" = ["S603"]
+"orchestration/**" = ["S603"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

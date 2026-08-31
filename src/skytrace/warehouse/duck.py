@@ -94,7 +94,11 @@ def describe_warehouse(settings: Settings | None = None) -> list[TableInfo]:
             # jamais nu dans du SQL.
             quoted = f'"{schema}"."{name}"'
             try:
-                (rows,) = connection.execute(f"select count(*) from {quoted}").fetchone()
+                # Un identifiant de table ne peut pas etre lie comme un
+                # parametre : il est donc cite, et il vient du catalogue.
+                (rows,) = connection.execute(
+                    f"select count(*) from {quoted}"  # noqa: S608
+                ).fetchone()
             except duckdb.Error:
                 rows = -1
             infos.append(TableInfo(schema=schema, name=name, rows=int(rows)))

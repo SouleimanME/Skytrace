@@ -75,6 +75,52 @@ deux passages, soit un quart du delai : large marge si un passage saute.
 
 Cout : vingt-six commits par an, tous marques `chore:` et `[skip ci]`.
 
+### 5. Le modele se reentraine seul
+
+Le classifieur etait entraine et applique A LA MAIN. Mesure quatre jours
+apres le dernier passage : **18 581 appareils sur 93 652, soit 19,8 %,
+n'avaient aucune prediction**. La collecte tournait, la moitie ML se figeait,
+et l'ecart se creusait d'environ 4 600 appareils par jour. Un tableau de bord
+qui annonce des "trous combles" alors que le nombre de trous augmente dit le
+contraire de la verite.
+
+`modele.yml` s'en charge chaque lundi : reconstruction des marts,
+entrainement, scoring de toute la flotte, republication du mart de
+predictions. Apres passage : **0,5 % non scores**, contre 19,8 %.
+
+Une semaine suffit parce que le modele apprend sur des mois de trafic - un
+jour de plus ne change pas ce qu'il sait. C'est la POPULATION qui grandit
+chaque jour, et ce sont les appareils neufs qui manquent de prediction.
+
+## Ce que le temps aurait casse
+
+Deux defauts n'auraient rien casse tout de suite, et beaucoup plus tard.
+
+**L'annee etait ecrite en dur.** L'age moyen des flottes se calculait
+`2026 - annee_de_construction`. Au 1er janvier 2027, tous les ages affiches
+auraient ete sous-estimes d'un an, silencieusement et pour toujours. Un
+tableau de bord cense tourner des annees ne peut pas contenir l'annee de sa
+propre ecriture.
+
+**Trois workflows ecrivaient dans l'entrepot avec des groupes de concurrence
+differents.** Depuis que la veille repare, elle collecte donc elle ecrit ; le
+reentrainement aussi. DuckDB n'autorise qu'un seul ecrivain : deux taches
+lancees en meme temps se seraient marchees dessus. Les trois partagent
+desormais le groupe `collecte` et s'attendent.
+
+## Ce qui grandit, et jusqu'ou
+
+| Ressource | Consommation | Plafond | Marge |
+|---|---|---|---|
+| Stockage R2 | ~6 Mo/jour, plateau a **1,12 Go** (retention 180 j) | 10 Go gratuits | **9x** |
+| Credits OpenSky | 96/jour (24 releves x 4) | 400/jour | 4x |
+| Minutes Actions | depot public | illimite | - |
+
+La retention borne le stockage : au-dela de 180 jours, les anciens releves
+sont purges a chaque collecte. Le lac ne grandit donc pas indefiniment, il
+atteint un plateau. L'entrepot et les statistiques, eux, se reconstruisent
+entierement a chaque passage.
+
 ## Ce qui peut encore vous ecrire
 
 | Situation | Courriel ? | Pourquoi |

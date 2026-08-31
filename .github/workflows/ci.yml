@@ -17,6 +17,12 @@ env:
   SKYTRACE_DUCKDB_PATH: ${{ github.workspace }}/data/warehouse/skytrace.duckdb
   SKYTRACE_REGION: france
 
+permissions:
+  # Le jeton du workflow ne sert qu'a recuperer le code. Sans cette
+  # declaration il herite du reglage du depot, qui peut permettre l'ecriture :
+  # une dependance compromise pourrait alors pousser un commit.
+  contents: read
+
 jobs:
   quality:
     name: Lint et tests unitaires
@@ -28,6 +34,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Deux commits : la verification des messages compare HEAD~1..HEAD.
+          fetch-depth: 2
 
       - uses: actions/setup-python@v5
         with:
@@ -42,6 +51,38 @@ jobs:
 
       - name: Format (ruff)
         run: ruff format --check .
+
+      - name: Convention des messages de commit
+        # PORTEE VOLONTAIREMENT LIMITEE AUX NOUVEAUX COMMITS. L'historique
+        # porte trois ecarts anterieurs a cette regle - un accent isole, un
+        # sujet trop long, le commit initial sans prefixe. Les corriger
+        # imposerait de reecrire l'historique et de forcer un push, pour un
+        # benefice cosmetique : on prend la regle a partir de maintenant.
+        #
+        # Une seule version de Python suffit : la verification ne depend pas
+        # de l'interpreteur.
+        if: matrix.python-version == '3.12'
+        run: |
+          plage="HEAD~1..HEAD"
+          git rev-parse HEAD~1 >/dev/null 2>&1 || plage="HEAD -1"
+          python scripts/verifier_commits.py $plage
+
+      - name: Vulnerabilites connues des dependances
+        # POURQUOI UN CONTROLE ET NON UN AUDIT PONCTUEL. Un audit ne protege
+        # que le jour ou il est fait. Cette etape le rejoue a chaque commit :
+        # une faille publiee demain sur une dependance fera rougir la CI, sans
+        # que personne n'ait a y penser.
+        #
+        # LES QUATRE EXCEPTIONS. `sqlparse` 0.5.5 porte quatre avis, tous des
+        # denis de service sur du SQL FOURNI PAR UN ATTAQUANT. Ici sqlparse ne
+        # lit que les modeles dbt du depot : qui pourrait lui soumettre du SQL
+        # controlerait deja le code source, auquel cas la faille est le moindre
+        # souci. La version corrigee (0.6.0) exige dbt-core >= 1.12, que
+        # `dagster-dbt` interdit encore (<1.12) - y compris dans sa derniere
+        # version. L'exception tombera d'elle-meme quand dagster-dbt suivra,
+        # et l'etape le signalera puisque l'avis deviendra inconnu.
+        run: |
+          pip-audit --progress-spinner off             --ignore-vuln PYSEC-2026-3696             --ignore-vuln PYSEC-2026-3697             --ignore-vuln PYSEC-2026-3698             --ignore-vuln PYSEC-2026-3699
 
       - name: Tests unitaires
         run: pytest --cov=skytrace --cov-report=term-missing

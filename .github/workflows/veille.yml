@@ -37,8 +37,24 @@ on:
     - cron: "41 5,17 * * *"
   workflow_dispatch: {}
 
+permissions:
+  # Le jeton du workflow ne sert qu'a recuperer le code. Sans cette
+  # declaration il herite du reglage du depot, qui peut permettre l'ecriture :
+  # une dependance compromise pourrait alors pousser un commit.
+  contents: read
+
 concurrency:
-  group: veille
+  # GROUPE `collecte` ET NON `veille`, DEPUIS QUE CETTE TACHE REPARE.
+  #
+  # Elle ne se contentait plus de lire : son etape de reparation lance une
+  # collecte, donc elle ECRIT dans l'entrepot. Avec un groupe distinct, elle
+  # pouvait le faire pendant que `collect.yml` ecrivait aussi - et DuckDB
+  # n'autorise qu'un seul ecrivain. Le partage du groupe met les deux en file
+  # au lieu de les laisser se marcher dessus.
+  #
+  # Le passage normal ne coute que quelques secondes : attendre une collecte
+  # en cours ne retarde rien de perceptible.
+  group: collecte
   cancel-in-progress: true
 
 jobs:
@@ -54,6 +70,12 @@ jobs:
       # creuserait un trou artificiel dans toutes les series. L'erreur a
       # deja ete commise a la main : elle ne doit pas etre automatisee.
       SKYTRACE_REGION: world
+      # Identifiants OpenSky, FACULTATIFS. Sans eux le client reste anonyme :
+      # la collecte courante fonctionne, mais l'historique est refuse et le
+      # budget quotidien est dix fois plus bas. Les definir active le
+      # rattrapage des trous sans autre changement.
+      OPENSKY_CLIENT_ID: ${{ secrets.OPENSKY_CLIENT_ID }}
+      OPENSKY_CLIENT_SECRET: ${{ secrets.OPENSKY_CLIENT_SECRET }}
       SKYTRACE_DUCKDB_PATH: ${{ github.workspace }}/data/warehouse/skytrace.duckdb
       SKYTRACE_R2_ACCOUNT_ID: ${{ secrets.SKYTRACE_R2_ACCOUNT_ID }}
       SKYTRACE_R2_BUCKET: ${{ secrets.SKYTRACE_R2_BUCKET }}
@@ -122,6 +144,25 @@ jobs:
           echo "Lac perime : collecte de rattrapage."
           skytrace pipeline
           skytrace publier-sante
+
+      - name: Rattrapage des trous de la serie
+        if: steps.garde.outputs.active == 'true'
+        # SANS IDENTIFIANTS OPENSKY, CETTE ETAPE NE FAIT RIEN ET SORT EN 0.
+        #
+        # Mesure sur ce depot : 102 heures perdues sur environ 250, dont un
+        # trou de 35 heures pendant que l'ordonnanceur GitHub se taisait. Ces
+        # positions ne revenaient jamais - la collecte reprend au present et la
+        # serie garde son vide pour toujours. Une serie temporelle trouee ne se
+        # compare pas a elle-meme d'une periode a l'autre.
+        #
+        # Le rattrapage exige un compte OpenSky : l'API refuse l'historique aux
+        # requetes anonymes. La commande s'en apercoit et s'abstient plutot que
+        # d'echouer, parce qu'une alerte pour une capacite non configuree ne
+        # demande aucune action.
+        #
+        # Le plafond de 12 releves par passage borne la depense en credits :
+        # les trous se comblent par tranches, deux fois par jour.
+        run: skytrace backfill --max-snapshots 12
 
       - name: Battement de coeur apres reparation
         if: >-

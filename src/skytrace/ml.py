@@ -110,6 +110,10 @@ FEATURES = (
 
 ROTORCRAFT_RE = "|".join(ROTORCRAFT_PATTERNS)
 
+# Les valeurs interpolees ici sont des CONSTANTES du module - la liste des
+# constructeurs, l'expression des voilures tournantes, le plancher
+# d'observation. Aucune entree exterieure n'y parvient, et un identifiant
+# SQL ne peut de toute facon pas etre lie comme un parametre.
 DATASET_SQL = f"""
     with vol as (
         select
@@ -141,7 +145,7 @@ DATASET_SQL = f"""
     from vol
     join marts.dim_aircraft a using (aircraft_icao24)
     where a.manufacturer_group <> 'Inconnu'
-"""
+"""  # noqa: S608
 
 
 def build_dataset(connection) -> pd.DataFrame:
@@ -487,6 +491,8 @@ def list_versions(settings=None) -> list[str]:
 #: Meme calcul que le jeu d'entrainement - il doit le rester, sans quoi le
 #: modele verrait a l'usage des variables construites autrement qu'a
 #: l'entrainement.
+# Meme situation que `DATASET_SQL` : seules des constantes du module sont
+# interpolees. Les adresses OACI, elles, sont LIEES dans `predict_aircraft`.
 PREDICT_SQL = f"""
     with vol as (
         select
@@ -509,7 +515,12 @@ PREDICT_SQL = f"""
            a.most_frequent_callsign
     from vol
     left join marts.dim_aircraft a using (aircraft_icao24)
-"""
+"""  # noqa: S608
+
+
+def _est_adresse_oaci(valeur: str) -> bool:
+    """Une adresse OACI 24 bits : six caracteres hexadecimaux, et rien d'autre."""
+    return len(valeur) == 6 and all(c in "0123456789abcdefABCDEF" for c in valeur)
 
 
 def predict_aircraft(connection, modele, icao24: list[str]) -> pd.DataFrame:
@@ -518,10 +529,23 @@ def predict_aircraft(connection, modele, icao24: list[str]) -> pd.DataFrame:
     Renvoie la classe predite ET sa probabilite. Une prediction sans son
     degre de certitude invite a la prendre pour un fait.
     """
-    adresses = ", ".join(f"'{a.lower()}'" for a in icao24 if a)
-    if not adresses:
+    # DEUX PROTECTIONS, ET ELLES NE FONT PAS DOUBLON.
+    #
+    # Ces adresses viennent de la ligne de commande, donc de l'exterieur. La
+    # version precedente les inserait telles quelles dans la requete par
+    # interpolation de chaine : une valeur contenant une apostrophe cassait
+    # la requete, et une valeur choisie pouvait en changer le sens.
+    #
+    # Le FILTRE ecarte ce qui n'est pas une adresse OACI - six caracteres
+    # hexadecimaux, rien d'autre - et rend donc l'erreur de frappe visible
+    # plutot que silencieuse. La LIAISON garantit que le contenu reste une
+    # valeur et ne devienne jamais de la syntaxe, quoi qu'il traverse le
+    # filtre un jour.
+    valides = [a.lower() for a in icao24 if a and _est_adresse_oaci(a)]
+    if not valides:
         return pd.DataFrame()
-    frame = connection.execute(PREDICT_SQL.format(adresses=adresses)).df()
+    marqueurs = ", ".join("?" for _ in valides)
+    frame = connection.execute(PREDICT_SQL.format(adresses=marqueurs), valides).df()
     if frame.empty:
         return frame
     proba = modele.predict_proba(frame[list(FEATURES)])[:, 1]

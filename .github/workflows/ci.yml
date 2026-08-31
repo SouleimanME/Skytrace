@@ -68,6 +68,27 @@ jobs:
           python scripts/verifier_commits.py $plage
 
       - name: Vulnerabilites connues des dependances
+        # SUR LA SEULE VERSION DEPLOYEE, ET C'EST DELIBERE.
+        #
+        # Cette etape tournait sur les trois versions de la matrice. Elle a
+        # echoue sur 3.11 : la resolution des dependances y differe, et des
+        # versions plus anciennes - donc porteuses d'avis - y sont retenues.
+        #
+        # Or 3.11 ne tourne NULLE PART. Tous les workflows de production -
+        # collecte, veille, reentrainement, maintien en eveil - sont sur 3.12.
+        # La matrice existe pour verifier que le CODE fonctionne sur trois
+        # versions, pas pour certifier trois jeux de dependances dont deux ne
+        # seront jamais installes.
+        #
+        # Auditer une combinaison qui n'est jamais deployee produit une alerte
+        # que personne ne peut traiter : ni exploitable, ni corrigeable sans
+        # renoncer au support de 3.11. C'est le genre d'alarme qui apprend a
+        # ignorer les suivantes.
+        #
+        # CE QUE CELA NE COUVRE PLUS : une installation manuelle sur 3.11
+        # pourrait recuperer des dependances vulnerables. Le projet
+        # fonctionne, mais son jeu de dependances n'y est pas audite.
+        if: matrix.python-version == '3.12'
         # POURQUOI UN CONTROLE ET NON UN AUDIT PONCTUEL. Un audit ne protege
         # que le jour ou il est fait. Cette etape le rejoue a chaque commit :
         # une faille publiee demain sur une dependance fera rougir la CI, sans

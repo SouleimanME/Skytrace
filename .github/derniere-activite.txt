@@ -5,4 +5,4 @@ soixante jours sans activite. Le workflow Anti-inactivite reecrit
 cette date deux fois par mois pour que ce delai ne soit jamais
 atteint. Rien d'autre ne lit ce fichier.
 
-Derniere ecriture : 2026-08-30 12:21:18 UTC
+Derniere ecriture : 2026-09-01 09:30:27 UTC

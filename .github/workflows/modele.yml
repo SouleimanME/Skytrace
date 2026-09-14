@@ -61,7 +61,7 @@ jobs:
       SKYTRACE_DUCKDB_PATH: ${{ github.workspace }}/data/warehouse/skytrace.duckdb
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Secrets R2 presents ?
         id: garde
@@ -75,7 +75,7 @@ jobs:
             echo "active=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         if: steps.garde.outputs.active == 'true'
         with:
           python-version: "3.12"

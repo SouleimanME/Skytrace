@@ -50,7 +50,7 @@ jobs:
   visite:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Adresse publique definie ?
         id: garde
@@ -62,7 +62,7 @@ jobs:
             echo "active=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         if: steps.garde.outputs.active == 'true'
         with:
           python-version: "3.12"

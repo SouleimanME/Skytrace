@@ -78,7 +78,7 @@ jobs:
       HEARTBEAT_URL: ${{ secrets.SKYTRACE_HEARTBEAT_URL }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Garde-fou - secrets R2 presents
         # En mode R2 le workflow ne committe plus les donnees dans git. Sans
@@ -90,7 +90,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip

@@ -33,12 +33,12 @@ jobs:
         python-version: ["3.11", "3.12", "3.13"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Deux commits : la verification des messages compare HEAD~1..HEAD.
           fetch-depth: 2
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -115,13 +115,13 @@ jobs:
     # Python passerait a cote de l'essentiel. On execute donc la chaine dbt
     # complete et ses controles sur un jeu de donnees synthetique.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Deux commits : l'etape de migration construit avec les modeles du
           # precedent avant de lancer ceux d'aujourd'hui.
           fetch-depth: 2
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -208,7 +208,7 @@ jobs:
       - name: Publication de la documentation dbt
         run: skytrace dbt docs generate
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: dbt-target
@@ -219,9 +219,9 @@ jobs:
     name: Validation des definitions Dagster
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip

@@ -34,6 +34,23 @@ logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Codes de sortie du pipeline
+# ---------------------------------------------------------------------------
+# Le workflow de collecte reessaie trois fois, et un reessai n'a de sens que si
+# la cause peut disparaitre d'elle-meme. Sans ces codes, il ne voit qu'un
+# "non nul" et rejoue tout, y compris ce qui rendra le meme resultat.
+#
+# Ce que cela a coute quand la distinction manquait : tests/test_codes_de_sortie.py.
+CODE_OK = 0
+#: Cause susceptible de disparaitre : reseau, 502, delai depasse. Rejouer a un sens.
+CODE_ECHEC_PASSAGER = 1
+#: Budget OpenSky du jour epuise. Rejouer dans la minute ne le reconstitue pas.
+CODE_QUOTA_EPUISE = 2
+#: Verdict de qualite rendu sur des donnees deja ecrites. Rejouer rend le meme.
+CODE_VERDICT_QUALITE = 3
+
+
+# ---------------------------------------------------------------------------
 # Commandes
 # ---------------------------------------------------------------------------
 def cmd_ingest_states(_: argparse.Namespace) -> int:
@@ -45,7 +62,7 @@ def cmd_ingest_states(_: argparse.Namespace) -> int:
         result = ingest_states(settings)
     except CreditBudgetExceededError as exc:
         logger.error("%s", exc)
-        return 2
+        return CODE_QUOTA_EPUISE
 
     print(
         f"{result.rows} aeronefs | {result.snapshot_at:%Y-%m-%d %H:%M:%S} UTC "
@@ -525,8 +542,73 @@ def cmd_pipeline(args: argparse.Namespace) -> int:
     except Exception as exc:  # noqa: BLE001 - la purge ne doit pas casser la collecte
         logger.warning("Retention ignoree : %s", exc)
 
+    # Le compte rendu de la derniere execution est efface AVANT celle-ci. Sans
+    # cela, un build qui echoue trop tot pour en ecrire un (lac injoignable,
+    # erreur de compilation) laisserait lire celui de la veille : une coupure
+    # reseau passerait pour un verdict de qualite, et le workflow cesserait de
+    # reessayer precisement quand reessayer avait un sens.
+    compte_rendu = settings.dbt_project_dir / "target" / "run_results.json"
+    compte_rendu.unlink(missing_ok=True)
+
     build_args = argparse.Namespace(dbt_args=["build"])
-    return cmd_dbt(build_args)
+    code = cmd_dbt(build_args)
+    if code == CODE_OK:
+        return CODE_OK
+
+    # L'ingestion a reussi : le snapshot est ecrit, les credits sont depenses.
+    # Si ce qui a echoue est un VERDICT sur ces donnees, le rejouer ne fera que
+    # recommencer la depense pour obtenir le meme verdict. On le dit au workflow
+    # par le code de sortie, plutot que de le laisser deviner.
+    verdicts = _verdicts_de_qualite(settings)
+    if verdicts:
+        logger.error(
+            "Verdict de qualite sur des donnees deja ecrites : %s. "
+            "Rejouer la collecte rendra le meme verdict ; corriger la donnee "
+            "ou la regle.",
+            ", ".join(verdicts),
+        )
+        return CODE_VERDICT_QUALITE
+    return code
+
+
+def _verdicts_de_qualite(settings) -> list[str]:
+    """Tests dbt ayant rendu `fail` au dernier build, s'il y en a.
+
+    dbt separe deux issues dans `run_results.json`, et cette separation est
+    exactement celle qui nous manque :
+
+      * `error` : l'execution n'a pas abouti (lac injoignable, memoire,
+        compilation). La cause peut ne plus etre la au prochain essai.
+      * `fail`  : le test s'est execute et a rendu un VERDICT sur des donnees
+        deja ecrites. Le meme build sur les memes donnees rendra le meme.
+
+    Lire ce fichier plutot que le code de sortie de dbt est la seule facon
+    d'obtenir la distinction : dbt rend 1 dans les deux cas.
+
+    Le fichier est efface avant chaque build : son absence signifie donc que
+    dbt n'est pas alle jusqu'a rendre un verdict, pas qu'il n'y en a pas.
+
+    Une lecture impossible n'est pas une erreur : on rend une liste vide, le
+    pipeline retombe sur le code de dbt, et le comportement est celui d'avant.
+    Un diagnostic ne doit pas pouvoir aggraver la panne qu'il decrit.
+    """
+    import json
+
+    chemin = settings.dbt_project_dir / "target" / "run_results.json"
+    try:
+        resultats = json.loads(chemin.read_text(encoding="utf-8"))["results"]
+    except (OSError, ValueError, KeyError, TypeError):
+        logger.info("Aucun compte rendu dbt exploitable (%s) : cause indeterminee.", chemin)
+        return []
+
+    noms: list[str] = []
+    for resultat in resultats:
+        if resultat.get("status") != "fail":
+            continue
+        # `test.<paquet>.<nom du test>.<empreinte>` : le nom est l'avant-dernier.
+        morceaux = str(resultat.get("unique_id", "")).split(".")
+        noms.append(morceaux[-2] if len(morceaux) >= 2 else "test inconnu")
+    return noms
 
 
 def _maybe_refresh_air_quality(settings, *, max_age_hours: float = 6.0) -> None:

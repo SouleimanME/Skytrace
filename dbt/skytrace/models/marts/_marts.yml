@@ -71,12 +71,24 @@ models:
                 severity: warn
       - name: position_age_seconds
         description: >
-          Age de la derniere position connue au moment du releve. Une
-          valeur negative signalerait une incoherence d'horloge cote source.
+          Age de la derniere position connue au moment du releve. Une valeur
+          negative signalerait une incoherence d'horloge cote source.
+
+          C'est ce qui la range du cote des PLAUSIBILITES, comme l'altitude et
+          la vitesse ci-dessus : elle depend d'une horloge que nous ne tenons
+          pas. Elle etait pourtant en `error`, donc armee du meme piege que le
+          cap (recit dans tests/test_severite_plausibilite.py).
+
+          Mesure du 15 septembre 2026 : aucun age negatif sur 10,6 millions de
+          lignes, minimum 0, mediane 1 s. Le risque ne s'est jamais realise, et
+          cette valeur ne garantit rien de structurel : elle n'alimente que
+          `is_position_stale`, un indicateur d'affichage.
         data_tests:
           - accepted_range:
               arguments:
                 min_value: 0
+              config:
+                severity: warn
       - name: is_position_stale
         description: >
           Position vieille de plus de 300 s, soit au-dela du 99e centile

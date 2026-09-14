@@ -118,15 +118,43 @@ jobs:
         # signale que ce qui resiste aux trois essais. Le pipeline est
         # idempotent - la table de faits est incrementale en `delete+insert`
         # sur la cle (appareil, instant) - donc rejouer ne duplique rien.
+        #
+        # MAIS ON NE RETENTE QUE CE QUI PEUT REUSSIR. Rejouer une cause qui ne
+        # peut pas disparaitre d'elle-meme ne fait que re-collecter un snapshot
+        # et redepenser des credits pour obtenir le meme echec.
+        #
+        # `skytrace pipeline` distingue donc les deux par son code de sortie
+        # (constantes CODE_* dans src/skytrace/cli.py, et ce que le melange a
+        # coute dans tests/test_codes_de_sortie.py).
         run: |
           for tentative in 1 2 3; do
             echo "::group::Tentative $tentative/3"
-            if skytrace pipeline; then
-              echo "::endgroup::"
+            # `set +e` est indispensable : GitHub execute ce bloc avec `bash -e`,
+            # qui interrompt le script des la premiere commande en echec. Sans
+            # lui, la ligne suivante ne serait jamais atteinte et le code de
+            # sortie - toute la raison d'etre de ce qui suit - serait perdu.
+            set +e
+            skytrace pipeline
+            code=$?
+            set -e
+            echo "::endgroup::"
+
+            if [ "$code" -eq 0 ]; then
               exit 0
             fi
-            echo "::endgroup::"
-            echo "Tentative $tentative en echec."
+
+            case "$code" in
+              2)
+                echo "::error::Budget OpenSky du jour epuise. Rejouer ne le reconstitue pas : reduire la cadence, restreindre SKYTRACE_REGION, ou fournir des identifiants OpenSky."
+                exit 1
+                ;;
+              3)
+                echo "::error::Un test dbt a rendu un verdict sur des donnees deja ecrites. Rejouer rendrait le meme : corriger la donnee ou la regle (journal ci-dessus)."
+                exit 1
+                ;;
+            esac
+
+            echo "Tentative $tentative en echec (code $code, cause possiblement passagere)."
             if [ "$tentative" -lt 3 ]; then
               sleep 60
             fi

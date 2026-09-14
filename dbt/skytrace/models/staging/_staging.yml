@@ -63,11 +63,31 @@ models:
               config:
                 severity: warn
       - name: heading_deg
+        description: >
+          Cap vrai, en degres. Comme l'altitude et la vitesse ci-dessus, c'est
+          une PLAUSIBILITE DE CAPTEUR et non un invariant structurel.
+
+          Ce test etait le seul des trois laisse en `error`, par oubli, et il a
+          bloque toutes les collectes de septembre 2026 pour 35 lignes sur
+          10,6 millions. Le recit complet est dans
+          tests/test_severite_plausibilite.py, qui verrouille aussi la regle.
+
+          CE QU'IL FAUT RETENIR ICI, au moment de toucher a une severite : la
+          source `opensky_states` lit TOUT l'historique du lac
+          (`**/*.parquet`). Une ligne aberrante n'est donc pas un incident du
+          jour, c'est une condition d'echec definitive : elle est relue a
+          chaque build, et la retention la garde 180 jours.
+
+          Les deux bornes voisines donnent l'echelle : 532 lignes hors plage
+          pour l'altitude, 6 286 pour la vitesse. Elles n'ont jamais rien
+          casse, parce qu'elles etaient en `warn`.
         data_tests:
           - accepted_range:
               arguments:
                 min_value: 0
                 max_value: 360
+              config:
+                severity: warn
       - name: is_on_ground
         data_tests:
           - not_null

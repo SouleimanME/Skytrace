@@ -1,7 +1,7 @@
 # SkyTrace
 
-**Pipeline de données end-to-end sur le trafic aérien européen.**
-Collecte les positions ADS-B de tous les avions en vol toutes les 15 minutes,
+**Pipeline de données end-to-end sur le trafic aérien mondial.**
+Collecte les positions ADS-B de tous les avions en vol une fois par heure,
 les transforme en modèle dimensionnel testé, et les expose dans un tableau
 de bord.
 
@@ -10,15 +10,10 @@ de bord.
 > cloud, **et se déploie gratuitement en ligne** (GitHub Actions + Streamlit
 > Community Cloud) - voir [Déploiement](#déploiement-en-ligne-gratuit).
 
-<!--
-Une fois le dépôt public créé, coller les badges ci-dessous (remplacer
-<compte> par ton identifiant GitHub) et le lien de la démo Streamlit :
+[![CI](https://github.com/SouleimanME/Skytrace/actions/workflows/ci.yml/badge.svg)](https://github.com/SouleimanME/Skytrace/actions/workflows/ci.yml)
+[![Collecte](https://github.com/SouleimanME/Skytrace/actions/workflows/collect.yml/badge.svg)](https://github.com/SouleimanME/Skytrace/actions/workflows/collect.yml)
 
-[![CI](https://github.com/<compte>/skytrace/actions/workflows/ci.yml/badge.svg)](https://github.com/<compte>/skytrace/actions/workflows/ci.yml)
-[![Collecte](https://github.com/<compte>/skytrace/actions/workflows/collect.yml/badge.svg)](https://github.com/<compte>/skytrace/actions/workflows/collect.yml)
-
-**Démo en ligne** : https://<compte>-skytrace.streamlit.app
--->
+**Démo en ligne** : [skytrace-data.streamlit.app](https://skytrace-data.streamlit.app)
 
 ## Pourquoi ce projet
 
@@ -32,7 +27,7 @@ Les positions ADS-B ont exactement ces propriétés :
 | Propriété | Conséquence technique démontrée |
 |---|---|
 | Flux éphémère (une position non collectée est perdue) | Ordonnancement, idempotence, rejeu |
-| ~900 aéronefs × 96 relevés/jour | Partitionnement, format colonnaire, modèle incrémental |
+| ~9 000 aéronefs × 24 relevés/jour | Partitionnement, format colonnaire, modèle incrémental |
 | Champs nuls, indicatifs mal formés, positions aberrantes | Tests de qualité, couche de nettoyage isolée |
 | API à quota strict | Gestion de budget, backoff exponentiel, tolérance aux pannes |
 | Aucun référentiel intégré | Jointure spatiale avec une source externe |
